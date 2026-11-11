@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# 환경 변수 (API 키 포함)
+.env
+
+# 수집 데이터 · 인덱스 캐시
+data/*
+!data/.gitkeep
+
+# docker compose 볼륨 (milvus, etcd, minio, postgres)
+volumes/
+
+# 모델 캐시
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
