@@ -51,8 +51,8 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "9001:9001"
-      - "9000:9000"
+      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:9000:9000"
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -81,8 +81,8 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
     depends_on:
       milvus-volume-init:
         condition: service_completed_successfully
@@ -98,7 +98,7 @@ services:
     environment:
       MILVUS_URL: standalone:19530
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - standalone
 
@@ -110,7 +110,7 @@ services:
       POSTGRES_PASSWORD: lawlens
       POSTGRES_DB: lawlens
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       # PostgreSQL 18 이미지는 /var/lib/postgresql 를 마운트하는 것을 권장
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql
