@@ -55,6 +55,21 @@ def test_chunker_adds_header_validity_and_splits() -> None:
     assert len(chunk_law_version(v2, date(2025, 1, 1), MAX_DATE, max_chars=120)) > 1
 
 
+def test_chunker_splits_single_long_line() -> None:
+    """줄바꿈 없는 긴 줄도 max_chars 이하로 잘려 Milvus text 한도를 넘지 않는다."""
+    law = Law(law_id="1", name="부가가치세법 시행령", law_type="대통령령")
+    sentence = "가" * 30 + "한다. "
+    one_line = sentence * 200 + "나" * 500  # 줄바꿈 없음, 마지막은 공백 없는 덩어리
+    v = LawVersion("9", law, date(2025, 1, 1), articles=[Article("101", None, one_line)])
+    chunks = chunk_law_version(v, date(2025, 1, 1), MAX_DATE, max_chars=300)
+    bodies = [c.text.split("\n", 1)[1] for c in chunks]
+    assert len(chunks) > 1
+    assert all(len(b) <= 300 for b in bodies)
+    assert bodies[0].endswith("한다.")  # 문장 경계에서 자름
+    assert "".join(bodies).replace(" ", "") == one_line.replace(" ", "")  # 내용 손실 없음
+    assert all(len(c.text.encode()) <= 8192 for c in chunks)
+
+
 def test_milvus_schema_builds_offline() -> None:
     names = [f.name for f in law_schema(1024).fields]
     assert names[0] == "chunk_id"

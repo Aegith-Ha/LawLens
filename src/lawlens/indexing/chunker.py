@@ -29,13 +29,35 @@ def build_header(law_name: str, article: Article) -> str:
     return " > ".join(parts)
 
 
+def _split_line(line: str, limit: int) -> list[str]:
+    """limit 보다 긴 한 줄을 문장 끝(". ") → 공백 → 글자 수 순으로 자른다."""
+    out: list[str] = []
+    while len(line) > limit:
+        window = line[: limit + 1]
+        cut = window.rfind(". ") + 1  # 마침표까지 앞 조각에 포함
+        if cut <= 0:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = limit
+        out.append(line[:cut].rstrip())
+        line = line[cut:].lstrip()
+    if line:
+        out.append(line)
+    return out
+
+
 def _split(text: str, limit: int) -> list[str]:
-    """항(①②…) 경계(줄바꿈)를 우선으로 limit 이하로 자른다."""
+    """항(①②…) 경계(줄바꿈)를 우선으로 limit 이하로 자른다.
+
+    줄바꿈 없이 limit 을 넘는 줄(긴 단서 조항 등)은 문장 단위로 더 자른다.
+    Milvus text 필드 한도(8192 바이트, 한글 1자 = 3바이트)를 넘지 않게 하기 위함이다.
+    """
     if len(text) <= limit:
         return [text]
     out: list[str] = []
     buf = ""
-    for line in text.split("\n"):
+    lines = [piece for line in text.split("\n") for piece in _split_line(line, limit)]
+    for line in lines:
         if buf and len(buf) + len(line) + 1 > limit:
             out.append(buf)
             buf = ""
