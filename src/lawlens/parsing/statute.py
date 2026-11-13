@@ -6,6 +6,8 @@
     └─ 조문
        └─ 조문단위[]
           ├─ 조문여부 "전문": 편·장·절·관 제목 (예: "제1장 총칙")
+          │                  조문 없이 본문 한 덩어리로 된 법령(예: 표준시에 관한 법률)은
+          │                  본문도 "전문"(조문번호 0)으로 온다 → 조문 하나(SINGLE_ARTICLE_NO)로 저장
           └─ 조문여부 "조문": 조문번호, 조문가지번호, 조문제목, 조문내용,
                               항 (객체 또는 목록) → 호 (객체 또는 목록) → 목 (객체 또는 목록)
 
@@ -17,7 +19,7 @@ import re
 from datetime import date
 from typing import Any
 
-from lawlens.domain.statute import Article, Law, LawVersion
+from lawlens.domain.statute import SINGLE_ARTICLE_NO, Article, Law, LawVersion
 from lawlens.parsing.text import clean_article_text
 from lawlens.timeutil import parse_yyyymmdd
 
@@ -97,6 +99,7 @@ def parse_law(raw: dict[str, Any], mst: str, effective_date: date | None = None)
     articles: list[Article] = []
     seen: dict[str, int] = {}
     divisions: dict[str, str] = {}
+    loose: list[str] = []  # 편·장·절·관 제목이 아닌 "전문" 본문
 
     for unit in _as_list((root.get("조문") or {}).get("조문단위")):
         if not isinstance(unit, dict):
@@ -111,6 +114,8 @@ def parse_law(raw: dict[str, Any], mst: str, effective_date: date | None = None)
                 for lower in _LEVELS[level:]:
                     divisions.pop(lower, None)
                 divisions[m.group(1)] = clean_article_text(body)
+            elif body:
+                loose.append(clean_article_text(body))
             continue
         if kind != "조문":
             continue
@@ -131,6 +136,16 @@ def parse_law(raw: dict[str, Any], mst: str, effective_date: date | None = None)
                 text="\n".join(t for t in lines if t),
                 path=[divisions[lv] for lv in _LEVELS if lv in divisions],
                 is_deleted=bool(_DELETED.match(body)) and not unit.get("항"),
+            )
+        )
+
+    # 조문 없이 본문만 있는 법령: 본문 전체를 조문 하나로 저장 (없으면 검색에서 빠진다)
+    if not articles and any(loose):
+        articles.append(
+            Article(
+                article_no=SINGLE_ARTICLE_NO,
+                title=None,
+                text="\n".join(t for t in loose if t),
             )
         )
 

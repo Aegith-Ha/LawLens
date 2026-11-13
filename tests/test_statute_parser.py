@@ -36,7 +36,7 @@ def test_parse_real_response_refugee_act() -> None:
     assert "<개정" not in art5.text
 
 
-def _raw(units: list[dict[str, object]], **info: object) -> dict[str, object]:
+def _raw(units: list[dict[str, object]] | dict[str, object], **info: object) -> dict[str, object]:
     base = {"법령ID": "000001", "법령명_한글": "테스트법", "법종구분": {"content": "법률"}}
     return {"법령": {"기본정보": {**base, **info}, "조문": {"조문단위": units}}}
 
@@ -84,3 +84,34 @@ def test_requested_effective_date_wins() -> None:
     """같은 MST 에 시행일이 여러 개일 때 요청한 efYd 가 버전을 결정한다."""
     v = parse_law(_raw([], 시행일자="20210729"), mst="234435", effective_date=date(2022, 1, 1))
     assert v.version_key == "234435_20220101"
+
+
+def test_single_body_law_without_articles() -> None:
+    """조문 없이 본문만 "전문"(조문번호 0)으로 오는 법령 (예: 표준시에 관한 법률)."""
+    units = {
+        "조문여부": "전문",
+        "조문번호": "0",
+        "조문키": "0000000",
+        "조문제목": "",
+        "조문내용": "대한민국의 표준시는 동경 135도의   자오선을 기준으로 한다.",
+    }
+    v = parse_law(_raw(units, 시행일자="20110519"), mst="113175")
+
+    (art,) = v.articles
+    assert art.article_no == "0"
+    assert art.label == "본문"
+    assert art.title is None
+    assert art.path == []
+    assert art.text == "대한민국의 표준시는 동경 135도의 자오선을 기준으로 한다."
+    assert not art.is_deleted
+
+
+def test_heading_only_units_do_not_become_body() -> None:
+    """조문이 있는 법령의 장 제목 · 비분류 "전문" 은 본문 조문으로 만들지 않는다."""
+    units = [
+        {"조문여부": "전문", "조문내용": "제1장 총칙"},
+        {"조문여부": "전문", "조문내용": "제1속 굴착면의 기울기 등"},
+        {"조문여부": "조문", "조문번호": "1", "조문내용": "제1조(목적) 목적이다."},
+    ]
+    v = parse_law(_raw(units, 시행일자="20250101"), mst="9")
+    assert [a.article_no for a in v.articles] == ["1"]

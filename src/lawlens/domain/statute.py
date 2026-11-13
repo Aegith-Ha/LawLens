@@ -15,6 +15,10 @@ def make_version_key(mst: str, effective_date: date) -> str:
     return f"{mst}_{effective_date:%Y%m%d}"
 
 
+# 조문 없이 본문 한 덩어리로 된 법령의 본문 (API 의 조문번호 "0")
+SINGLE_ARTICLE_NO = "0"
+
+
 def make_article_id(version_key: str, article_no: str) -> str:
     return f"{version_key}:{article_no}"
 
@@ -41,6 +45,8 @@ class Article:
 
     @property
     def label(self) -> str:
+        if self.article_no == SINGLE_ARTICLE_NO:
+            return "본문"
         main, _, branch = self.article_no.partition("의")
         base = f"제{main}조의{branch}" if branch else f"제{main}조"
         return f"{base}({self.title})" if self.title else base
