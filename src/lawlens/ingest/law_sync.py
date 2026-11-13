@@ -1,4 +1,4 @@
-"""법령 동기화: 전체 배치 · 일배치.
+"""법령 동기화: 전체 배치 · 일배치. (판례는 prec_sync.py)
 
 처리 단위는 법령 버전 (MST, 시행일자). 한 버전은 다음 순서로 처리된다.
 
@@ -36,7 +36,7 @@ from lawlens.timeutil import date_range, parse_yyyymmdd, today_kst
 
 log = logging.getLogger(__name__)
 
-DAILY_JOB = "law_daily"
+LAW_DAILY_JOB = "law_daily"
 LAW_KIND = 1  # delHst knd: 법령
 
 
@@ -110,8 +110,8 @@ class LawSync:
 
         self._finalize(affected, stats)
         # 전체 범위를 받았다면 일배치는 오늘부터 이어서 하면 된다
-        if query is None and max_pages is None and self.state.get(DAILY_JOB) is None:
-            self.state.set(DAILY_JOB, self.today)
+        if query is None and max_pages is None and self.state.get(LAW_DAILY_JOB) is None:
+            self.state.set(LAW_DAILY_JOB, self.today)
             self.session.commit()
         return stats
 
@@ -129,7 +129,7 @@ class LawSync:
         중간에 실패해도 다음 실행 때 그 날짜부터 다시 한다.
         """
         end = until or self.today
-        last = self.state.get(DAILY_JOB)
+        last = self.state.get(LAW_DAILY_JOB)
         start = since or ((last or end) - timedelta(days=overlap_days))
 
         stats = SyncStats()
@@ -148,7 +148,7 @@ class LawSync:
 
             self._finalize(affected, stats)
             if last is None or d > last:
-                self.state.set(DAILY_JOB, d)
+                self.state.set(LAW_DAILY_JOB, d)
                 last = d
             self.session.commit()
         return stats

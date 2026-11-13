@@ -1,11 +1,13 @@
-"""법령 동기화 CLI.
+"""동기화 CLI. 대상(law, prec)별로 따로 실행한다.
 
-  uv run python -m scripts.sync full                 # 현행+시행예정 전체 (최초 1회)
-  uv run python -m scripts.sync full --nw 1,2,3      # 연혁까지 전부
-  uv run python -m scripts.sync daily                # 일배치 (cron 으로 매일)
-  uv run python -m scripts.sync daily --since 20261101 --until 20261110
-  uv run python -m scripts.sync reindex              # DB ↔ Milvus 차이만 반영
-  uv run python -m scripts.sync reindex --all        # Milvus 전체 재색인
+  uv run python -m scripts.sync law full                 # 현행+시행예정 전체 (최초 1회)
+  uv run python -m scripts.sync law full --nw 1,2,3      # 연혁까지 전부
+  uv run python -m scripts.sync law daily                # 일배치 (cron 으로 매일)
+  uv run python -m scripts.sync law daily --since 20261101 --until 20261110
+  uv run python -m scripts.sync law reindex              # DB ↔ Milvus 차이만 반영
+  uv run python -m scripts.sync law reindex --all        # Milvus 전체 재색인
+
+  uv run python -m scripts.sync prec full|daily          # 판례 (아직 구현 전)
 
 --no-index 를 주면 PostgreSQL 까지만 반영하고 Milvus 는 건드리지 않는다
 (나중에 reindex 로 한꺼번에 반영).
@@ -20,14 +22,18 @@ import typer
 
 from lawlens.config import get_settings
 from lawlens.indexing.indexer import Indexer
+from lawlens.ingest.law_sync import LawSync, SyncStats
 from lawlens.ingest.raw_store import RawStore
-from lawlens.ingest.sync import LawSync, SyncStats
 from lawlens.sources.lawgo.client import LawGoClient
 from lawlens.storage.db import get_sessionmaker, init_db
 from lawlens.storage.repositories import LawRepository
 from lawlens.timeutil import parse_yyyymmdd
 
-app = typer.Typer(add_completion=False)
+app = typer.Typer(add_completion=False, no_args_is_help=True)
+law_app = typer.Typer(no_args_is_help=True, help="법령 (eflaw)")
+prec_app = typer.Typer(no_args_is_help=True, help="판례 (prec) - 아직 구현 전")
+app.add_typer(law_app, name="law")
+app.add_typer(prec_app, name="prec")
 
 
 def _setup_logging() -> None:
@@ -75,7 +81,7 @@ def _echo(stats: SyncStats) -> None:
     typer.echo(stats)
 
 
-@app.command()
+@law_app.command()
 def full(
     nw: str = typer.Option("2,3", help="1: 연혁, 2: 시행예정, 3: 현행 (쉼표로 조합)"),
     query: str | None = typer.Option(None, help="법령명 검색어 (테스트용, 없으면 전체)"),
@@ -88,7 +94,7 @@ def full(
         _echo(sync.full(nw=nw, query=query, max_pages=max_pages, refetch=refetch))
 
 
-@app.command()
+@law_app.command()
 def daily(
     since: str | None = typer.Option(None, help="시작일 YYYYMMDD (기본: 마지막 성공일 - 겹침)"),
     until: str | None = typer.Option(None, help="종료일 YYYYMMDD (기본: 오늘)"),
@@ -106,7 +112,7 @@ def daily(
         )
 
 
-@app.command()
+@law_app.command()
 def reindex(
     all_: bool = typer.Option(False, "--all", help="Milvus 전체 재색인 (스키마·모델 변경 시)"),
 ) -> None:
@@ -116,6 +122,25 @@ def reindex(
             LawRepository(sync.session).reset_indexed()
             sync.session.commit()
         _echo(sync.reconcile_index())
+
+
+def _not_implemented() -> None:
+    typer.echo(
+        "판례 동기화는 아직 구현되지 않았습니다. 원본만 받으려면 scripts.ingest --target prec"
+    )
+    raise typer.Exit(1)
+
+
+@prec_app.command("full")
+def prec_full() -> None:
+    """판례 전체 배치 (구현 예정)."""
+    _not_implemented()
+
+
+@prec_app.command("daily")
+def prec_daily() -> None:
+    """판례 일배치 (구현 예정)."""
+    _not_implemented()
 
 
 if __name__ == "__main__":

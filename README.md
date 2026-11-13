@@ -97,7 +97,8 @@ lawlens/
 │   │
 │   ├── ingest/                 # ── Phase 1: 수집 파이프라인
 │   │   ├── collector.py        # 목록 조회 → 본문 조회 → raw 저장 (판례 등 raw 수집용)
-│   │   ├── sync.py             # 법령 전체 배치 · 일배치 (6장 참고)
+│   │   ├── law_sync.py         # 법령 전체 배치 · 일배치 (6장 참고)
+│   │   ├── prec_sync.py        # 판례 전체 배치 · 일배치 (구현 예정)
 │   │   └── raw_store.py        # data/raw/{target}/{id}.json 저장·조회
 │   │
 │   ├── parsing/                # ── Phase 1: 정규화
@@ -145,7 +146,7 @@ lawlens/
 │       └── routers/            # /search, /answer, /agent, /laws/{id}
 │
 ├── scripts/                    # CLI 진입점 (typer)
-│   ├── sync.py                 # 법령 동기화: full / daily / reindex
+│   ├── sync.py                 # 동기화: law full|daily|reindex, prec full|daily
 │   ├── ingest.py               # raw 수집만 (판례 등): --target prec --query 손해배상
 │   ├── init_milvus.py          # collection 생성·인덱스 빌드
 │   └── eval.py
@@ -161,7 +162,7 @@ lawlens/
     ├── fixtures/               # 실제 API 응답 샘플 (난민법 eflaw 본문)
     ├── test_statute_parser.py  # 실제 응답 파싱
     ├── test_validity.py        # 유효기간 계산
-    ├── test_sync.py            # 전체·일배치 시나리오 (개정·정정·삭제·폐지)
+    ├── test_law_sync.py        # 법령 전체·일배치 시나리오 (개정·정정·삭제·폐지)
     └── …
 ```
 
@@ -247,13 +248,15 @@ PostgreSQL의 `law_version`에 Milvus에 반영된 상태(`indexed_hash`, `index
 
 | 명령 | 용도 | 동작 |
 |---|---|---|
-| `scripts.sync full` | 최초 적재, 가끔 점검 | `eflaw` 목록(기본 `nw=2,3`: 시행예정+현행)을 받습니다. DB에 이미 있는 버전은 건너뜁니다(`--refetch`로 강제). 목록에 없는 버전을 지우는 정리는 하지 않습니다(개정 전 버전이 현행 목록에서 빠지는 건 정상이므로). |
-| `scripts.sync daily` | 매일 (cron) | 마지막 성공일 3일 전부터 오늘까지 하루씩 `lsHstInf` + `delHst`를 반영합니다. 하루가 끝날 때마다 진행 상태(`sync_state`)를 저장하므로 실패해도 그 날짜부터 이어서 합니다. |
-| `scripts.sync reindex` | Milvus 복구 | API 호출 없이 DB ↔ Milvus 차이만 반영합니다. `--all`이면 전체 재색인(스키마·임베딩 모델 변경 시). |
+| `scripts.sync law full` | 최초 적재, 가끔 점검 | `eflaw` 목록(기본 `nw=2,3`: 시행예정+현행)을 받습니다. DB에 이미 있는 버전은 건너뜁니다(`--refetch`로 강제). 목록에 없는 버전을 지우는 정리는 하지 않습니다(개정 전 버전이 현행 목록에서 빠지는 건 정상이므로). |
+| `scripts.sync law daily` | 매일 (cron) | 마지막 성공일 3일 전부터 오늘까지 하루씩 `lsHstInf` + `delHst`를 반영합니다. 하루가 끝날 때마다 진행 상태(`sync_state`)를 저장하므로 실패해도 그 날짜부터 이어서 합니다. |
+| `scripts.sync law reindex` | Milvus 복구 | API 호출 없이 DB ↔ Milvus 차이만 반영합니다. `--all`이면 전체 재색인(스키마·임베딩 모델 변경 시). |
 
 - 모든 단계가 **멱등**이라 같은 날짜를 다시 돌려도 결과가 같습니다. 늦게 등록되는 데이터를 놓치지 않도록 일배치는 최근 3일을 겹쳐서 다시 확인합니다(`--overlap-days`).
 - `--no-index`를 주면 PostgreSQL까지만 반영합니다. Milvus는 나중에 `reindex`로 한꺼번에 반영합니다.
-- 판례 일배치는 아직 없습니다(판례 목록의 날짜 필터 파라미터 확인 후 추가 예정).
+- 법령과 판례는 **실행 단위와 진행 상태(`sync_state`의 `law_daily` / `prec_daily`)를 분리**합니다. 한쪽이 실패해도 다른 쪽은 영향이 없고, 주기도 따로 정할 수 있습니다. API 클라이언트·DB·Milvus 연결 같은 인프라만 같이 씁니다.
+- 판례의 참조조문은 "법령명 + 조문번호 + 선고일"로 저장하고 검색 시 그 날짜에 유효한 조문과 연결하므로, 두 배치의 실행 순서에 의존하지 않습니다.
+- 판례 동기화(`scripts.sync prec full|daily`)는 명령만 있고 아직 구현 전입니다(판례 목록의 날짜 필터 파라미터 확인 후 추가 예정).
 
 ---
 
@@ -331,7 +334,7 @@ Phase 2의 기능을 **Tool**로 노출하고, LLM이 여러 단계로 조사하
   - [x] PostgreSQL 스키마 + 유효기간 모델
   - [x] 전체 배치 · 일배치 (개정·정정·삭제·폐지 반영)
   - [ ] Docker 환경에서 PostgreSQL · Milvus 연동 확인
-  - [ ] 현행법령 전체 적재 (`sync full`), 일배치 cron 등록
+  - [ ] 현행법령 전체 적재 (`sync law full`), 일배치 cron 등록
   - [ ] 판례 파서 · 판례 일배치
 - [ ] **Phase 2 – RAG**
   - [ ] 평가셋 초안
@@ -367,9 +370,9 @@ docker compose up -d          # Attu: http://localhost:3000
 
 # 5. 법령 적재 · 색인 (6장 참고)
 uv run python -m scripts.init_milvus
-uv run python -m scripts.sync full --query 난민법      # 소량으로 먼저 확인
-uv run python -m scripts.sync full                    # 현행+시행예정 약 6,700건 (API만 40분 내외, 임베딩 별도)
-uv run python -m scripts.sync daily                   # 이후 매일 (cron)
+uv run python -m scripts.sync law full --query 난민법      # 소량으로 먼저 확인
+uv run python -m scripts.sync law full                    # 현행+시행예정 약 6,700건 (API만 40분 내외, 임베딩 별도)
+uv run python -m scripts.sync law daily                   # 이후 매일 (cron)
 
 # 6. API 서버
 uv run uvicorn lawlens.api.main:app --reload  # http://localhost:8000/docs

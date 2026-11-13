@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 
 from lawlens.config import Settings
 from lawlens.domain.statute import LawVersion
+from lawlens.ingest.law_sync import LAW_DAILY_JOB, LawSync
 from lawlens.ingest.raw_store import RawStore
-from lawlens.ingest.sync import DAILY_JOB, LawSync
 from lawlens.sources.lawgo.client import LawGoClient
 from lawlens.storage.db import get_sessionmaker, init_db
 from lawlens.storage.repositories import LawRepository, SyncStateRepository
@@ -142,7 +142,7 @@ def test_daily_handles_amendment_correction_and_deletion(env: Env) -> None:
     sync.daily(since=d(2026, 11, 1))
     assert env.validity() == {"1_20250101": (d(2025, 1, 1), MAX_DATE)}
     assert idx.take() == [("index", "1_20250101", d(2025, 1, 1), MAX_DATE)]
-    assert SyncStateRepository(env.session).get(DAILY_JOB) == d(2026, 11, 3)
+    assert SyncStateRepository(env.session).get(LAW_DAILY_JOB) == d(2026, 11, 3)
 
     # 2) 시행예정 개정 공포 → 직전 버전 valid_to 확정 (재임베딩 없이 유효기간만 갱신)
     api.put("2", "20270101", "v2", reg_dt="20261104")
@@ -195,7 +195,7 @@ def test_full_skips_existing_versions(env: Env) -> None:
 
     first = env.sync.full()
     assert (first.saved, first.indexed) == (2, 2)
-    assert SyncStateRepository(env.session).get(DAILY_JOB) == date(2026, 11, 3)
+    assert SyncStateRepository(env.session).get(LAW_DAILY_JOB) == date(2026, 11, 3)
 
     calls_before = env.api.detail_calls
     second = env.sync.full()
