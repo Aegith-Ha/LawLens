@@ -13,6 +13,10 @@ configVersion: v2
 log:
   level: info
   console: true
+  # 로그 파일은 쓰지 않는다 (docker logs 로 확인). 비워 두지 않으면 기본값 logs/backup.log 를
+  # 컨테이너의 /app 아래에 만들려다 root 가 아닌 사용자로 실행할 때 permission denied 가 난다.
+  file:
+    path: ""
 
 milvus:
   # compose 의 Milvus 는 인증을 켜지 않았으므로 이 값은 쓰이지 않는다

@@ -1,32 +1,18 @@
 # Milvus 부분은 공식 v3.0.5 standalone compose 파일을 기반으로 함
 # https://github.com/milvus-io/milvus/releases/download/v3.0.5/milvus-standalone-docker-compose.yaml
+#
+# 데이터 저장 방식
+# - etcd · MinIO · Milvus · PostgreSQL 데이터: named volume (lawlens_etcd 등)
+#   새 볼륨은 이미지 안 폴더의 소유자를 그대로 이어받으므로 따로 소유자를 맞출 필요가 없다.
+#   주의: `docker compose down -v` 는 이 볼륨들(= 모든 데이터)을 삭제한다.
+# - milvus-backup 백업 파일: 호스트 폴더 ./volumes/milvus-backup (사용자가 직접 다루는 파일)
+
+# 프로젝트 이름을 고정해 어느 폴더에 clone 해도 볼륨 이름이 lawlens_* 로 같게 한다
+name: lawlens
 
 x-milvus-image: &milvus-image milvusdb/milvus:v3.0.5
 
 services:
-  # /var/lib/milvus 볼륨 소유권을 milvus 사용자로 맞추는 1회성 작업
-  milvus-volume-init:
-    image: *milvus-image
-    user: "0:0"
-    network_mode: none
-    read_only: true
-    restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        uid="$$(id -u milvus)"
-        gid="$$(id -g milvus)"
-        marker="/var/lib/milvus/.milvus-volume-owner-$${uid}-$${gid}"
-        if [ ! -e "$${marker}" ]; then
-          echo "Preparing /var/lib/milvus for $${uid}:$${gid}"
-          chown -R "$${uid}:$${gid}" /var/lib/milvus
-          touch "$${marker}"
-          chown "$${uid}:$${gid}" "$${marker}"
-        fi
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
-
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.25
@@ -36,7 +22,7 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+      - etcd:/etcd
     command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
@@ -54,7 +40,7 @@ services:
       - "127.0.0.1:9001:9001"
       - "127.0.0.1:9000:9000"
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+      - minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
@@ -73,7 +59,7 @@ services:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+      - milvus:/var/lib/milvus
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s
@@ -84,8 +70,6 @@ services:
       - "127.0.0.1:19530:19530"
       - "127.0.0.1:9091:9091"
     depends_on:
-      milvus-volume-init:
-        condition: service_completed_successfully
       etcd:
         condition: service_started
       minio:
@@ -102,17 +86,38 @@ services:
     depends_on:
       - standalone
 
+  # 백업 폴더(./volumes/milvus-backup) 소유자를 milvus-backup 실행 uid:gid 로 맞추는 작업.
+  # 폴더가 없으면 Docker 가 root 소유로 만들기 때문에 필요하다. 이미 맞으면 아무것도 하지 않는다.
+  milvus-backup-volume-init:
+    image: &milvus-backup-image milvusdb/milvus-backup:v0.6.2
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    restart: "no"
+    environment:
+      OWNER: "${LAWLENS_UID:-1000}:${LAWLENS_GID:-1000}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        if [ "$$(stat -c %u:%g /var/lib/milvus-backup)" != "$${OWNER}" ]; then
+          echo "chown -R $${OWNER} /var/lib/milvus-backup"
+          chown -R "$${OWNER}" /var/lib/milvus-backup
+        fi
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus-backup:/var/lib/milvus-backup
+
   # Milvus 백업/복원 REST 서버 → http://localhost:8080/api/v1/docs/index.html
   # 설정: docker/milvus-backup/backup.yaml, 백업 데이터: ./volumes/milvus-backup
   # Milvus 3.0 에서는 binlog 형식으로 만들어야 이 로컬 백업을 복원할 수 있다 (설정 파일 주석 참고)
-  #   docker compose exec milvus-backup /app/milvus-backup create -n <이름> --for archive
+  #   백업: docker compose exec milvus-backup /app/milvus-backup create -n <이름> --for archive
+  #   복원: docker compose exec milvus-backup /app/milvus-backup restore -n <이름> -s <접미사> --rebuild_index
+  #         (--rebuild_index 를 빼면 인덱스 없이 복원되어 load 가 실패한다)
   # 백업 파일을 호스트 사용자 소유로 만들기 위해 호스트 사용자 uid:gid 로 실행한다.
   # 기본값 1000:1000, 다르면 .env 에 LAWLENS_UID / LAWLENS_GID 지정 (.env.example 참고)
-  # ./volumes/milvus-backup 이 없으면 Docker 가 root 소유로 만들어 쓰기에 실패하므로
-  # 처음 한 번은 폴더를 직접 만들거나 소유자를 위 uid:gid 로 맞춰 둘 것.
   milvus-backup:
     container_name: milvus-backup
-    image: milvusdb/milvus-backup:v0.6.2
+    image: *milvus-backup-image
     user: "${LAWLENS_UID:-1000}:${LAWLENS_GID:-1000}"
     volumes:
       - ./docker/milvus-backup/backup.yaml:/app/backup.yaml:ro
@@ -120,6 +125,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
+      milvus-backup-volume-init:
+        condition: service_completed_successfully
       standalone:
         condition: service_healthy
 
@@ -134,12 +141,18 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       # PostgreSQL 18 이미지는 /var/lib/postgresql 를 마운트하는 것을 권장
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql
+      - postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lawlens -d lawlens"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+volumes:
+  etcd:
+  minio:
+  milvus:
+  postgres:
 
 networks:
   default:

@@ -85,7 +85,8 @@ lawlens/
 ├── README.md
 ├── pyproject.toml              # uv로 의존성 관리
 ├── .env.example                # LAW_API_OC, DB_URL, MILVUS_URI, LLM API KEY 등
-├── docker-compose.yml          # milvus standalone v3.0.5(+etcd, minio), attu, postgres 18
+├── docker-compose.yml          # milvus standalone v3.0.5(+etcd, minio), attu, milvus-backup, postgres 18
+├── docker/milvus-backup/       # milvus-backup 설정 (backup.yaml)
 │
 ├── src/lawlens/
 │   ├── config.py               # pydantic-settings 기반 설정
@@ -365,8 +366,10 @@ uv sync --extra ml            # + 임베딩/형태소 (torch, FlagEmbedding, kiw
 # 3. 환경 변수
 cp .env.example .env          # LAW_API_OC=<발급받은 OC 값>
 
-# 4. 인프라 (Milvus standalone + etcd + MinIO + Attu + PostgreSQL)
-docker compose up -d          # Attu: http://localhost:3000
+# 4. 인프라 (Milvus standalone + etcd + MinIO + Attu + milvus-backup + PostgreSQL)
+docker compose up -d          # Attu: http://localhost:3000, milvus-backup: http://localhost:8080
+                              # DB 데이터는 named volume(lawlens_*), Milvus 백업은 ./volumes/milvus-backup
+                              # 주의: docker compose down -v 는 named volume(모든 DB 데이터)을 삭제한다
 
 # 5. 법령 적재 · 색인 (6장 참고)
 uv run python -m scripts.init_milvus
