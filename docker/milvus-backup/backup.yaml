@@ -1,0 +1,52 @@
+# milvus-backup v0.6.2 설정 (docker-compose 의 milvus-backup 서비스가 /app/backup.yaml 로 마운트)
+# 샘플: https://github.com/zilliztech/milvus-backup/blob/v0.6.2/configs/backup-local.yaml
+#
+# Milvus 데이터는 MinIO(a-bucket/files)에 있고, 백업은 로컬 폴더(./volumes/milvus-backup)에 쓴다.
+#
+# 주의: 백업 저장소가 Milvus 저장소(MinIO)와 다른 종류(local)라서, 백업은 반드시
+#       binlog 형식으로 만들어야 복원할 수 있다.
+#       Milvus 3.0 의 기본값인 snapshot 형식은 "같은 저장 서비스 안에서만" 복원된다.
+#         CLI : milvus-backup create -n <이름> --for archive   (= --format binlog + RBAC)
+#         REST: POST /api/v1/create  {"backup_name": "<이름>", "format": "binlog"}
+configVersion: v2
+
+log:
+  level: info
+  console: true
+
+milvus:
+  # compose 의 Milvus 는 인증을 켜지 않았으므로 이 값은 쓰이지 않는다
+  user: "root"
+  password: "Milvus"
+
+  grpc:
+    address: standalone
+    port: 19530
+
+  management:
+    endpoint: http://standalone:9091
+
+  etcd:
+    endpoints:
+      - etcd:2379
+    rootPath: "by-dev"
+
+  storage:
+    provider: minio
+    address: minio
+    port: 9000
+    useSSL: false
+    bucketName: "a-bucket"
+    rootPath: "files"
+    auth:
+      type: static
+      accessKeyID: minioadmin
+      secretAccessKey: minioadmin
+
+backup:
+  storage:
+    provider: local
+    # 컨테이너 안 경로. 호스트의 ./volumes/milvus-backup 에 바인드 마운트된다
+    rootPath: "/var/lib/milvus-backup"
+  # 백업하는 동안 Milvus GC 를 멈춘다 (management.endpoint 사용)
+  pauseGC: true

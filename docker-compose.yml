@@ -102,6 +102,27 @@ services:
     depends_on:
       - standalone
 
+  # Milvus 백업/복원 REST 서버 → http://localhost:8080/api/v1/docs/index.html
+  # 설정: docker/milvus-backup/backup.yaml, 백업 데이터: ./volumes/milvus-backup
+  # Milvus 3.0 에서는 binlog 형식으로 만들어야 이 로컬 백업을 복원할 수 있다 (설정 파일 주석 참고)
+  #   docker compose exec milvus-backup /app/milvus-backup create -n <이름> --for archive
+  # 백업 파일을 호스트 사용자 소유로 만들기 위해 호스트 사용자 uid:gid 로 실행한다.
+  # 기본값 1000:1000, 다르면 .env 에 LAWLENS_UID / LAWLENS_GID 지정 (.env.example 참고)
+  # ./volumes/milvus-backup 이 없으면 Docker 가 root 소유로 만들어 쓰기에 실패하므로
+  # 처음 한 번은 폴더를 직접 만들거나 소유자를 위 uid:gid 로 맞춰 둘 것.
+  milvus-backup:
+    container_name: milvus-backup
+    image: milvusdb/milvus-backup:v0.6.2
+    user: "${LAWLENS_UID:-1000}:${LAWLENS_GID:-1000}"
+    volumes:
+      - ./docker/milvus-backup/backup.yaml:/app/backup.yaml:ro
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus-backup:/var/lib/milvus-backup
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      standalone:
+        condition: service_healthy
+
   postgres:
     container_name: lawlens-postgres
     image: postgres:18.6
