@@ -3,7 +3,8 @@
 #
 # 데이터 저장 방식
 # - etcd · MinIO · Milvus · PostgreSQL 데이터: named volume (lawlens_etcd 등)
-#   새 볼륨은 이미지 안 폴더의 소유자를 그대로 이어받으므로 따로 소유자를 맞출 필요가 없다.
+#   새 볼륨은 이미지 안 폴더의 소유자를 그대로 이어받는다. 다만 이건 볼륨을 처음 만들 때뿐이라,
+#   Milvus 이미지를 올렸을 때 milvus 사용자 uid 가 바뀌는 경우는 milvus-volume-init 이 맞춘다.
 #   주의: `docker compose down -v` 는 이 볼륨들(= 모든 데이터)을 삭제한다.
 # - milvus-backup 백업 파일: 호스트 폴더 ./volumes/milvus-backup (사용자가 직접 다루는 파일)
 
@@ -13,6 +14,31 @@ name: lawlens
 x-milvus-image: &milvus-image milvusdb/milvus:v3.0.5
 
 services:
+  # lawlens_milvus 볼륨 소유자를 이미지의 milvus 사용자로 맞추는 작업 (공식 compose 와 같은 로직)
+  # named volume 은 처음 만들 때 이미지 소유자를 이어받지만, 이미지 업그레이드로 milvus uid 가
+  # 바뀌면 기존 볼륨은 그대로라 Milvus 가 쓰지 못한다. uid 를 매번 읽어 다르면 다시 맞춘다.
+  milvus-volume-init:
+    image: *milvus-image
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        uid="$$(id -u milvus)"
+        gid="$$(id -g milvus)"
+        marker="/var/lib/milvus/.milvus-volume-owner-$${uid}-$${gid}"
+        if [ ! -e "$${marker}" ]; then
+          echo "Preparing /var/lib/milvus for $${uid}:$${gid}"
+          chown -R "$${uid}:$${gid}" /var/lib/milvus
+          touch "$${marker}"
+          chown "$${uid}:$${gid}" "$${marker}"
+        fi
+    volumes:
+      - milvus:/var/lib/milvus
+
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.25
@@ -70,6 +96,8 @@ services:
       - "127.0.0.1:19530:19530"
       - "127.0.0.1:9091:9091"
     depends_on:
+      milvus-volume-init:
+        condition: service_completed_successfully
       etcd:
         condition: service_started
       minio:
