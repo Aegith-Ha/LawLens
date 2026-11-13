@@ -26,3 +26,4 @@ volumes/
 .vscode/
 .idea/
 
+logs/
