@@ -127,7 +127,8 @@ lawlens/
 │   │
 │   ├── retrieval/              # ── Phase 2: 검색
 │   │   ├── query.py            # 쿼리 분석: 법령명·조문번호·사건번호 인식, 용어 확장
-│   │   ├── hybrid.py           # Milvus hybrid_search (dense + sparse, RRF) + 필터
+│   │   ├── hybrid.py           # Milvus hybrid_search (dense + sparse, RRF) + 기준일·종류 필터
+│   │   ├── service.py          # 검색 서비스: 조문 바로가기 + 결과를 조문 단위로 묶기
 │   │   ├── reranker.py         # cross-encoder 재정렬
 │   │   └── expand.py           # 인용 조문·하위법령·관련 판례로 컨텍스트 확장
 │   │
@@ -143,8 +144,10 @@ lawlens/
 │   │   └── policies.py         # 안전장치: 면책 문구, 근거 없는 단정 금지
 │   │
 │   └── api/                    # FastAPI
-│       ├── main.py
-│       └── routers/            # /search, /answer, /agent, /laws/{id}
+│       ├── main.py             # 앱 + 검색 모델 미리 불러오기
+│       ├── deps.py             # Milvus·bge-m3·DB 세션 의존성
+│       ├── static/index.html   # 검색 화면 (빌드 없는 단일 HTML)
+│       └── routers/            # /api/search, /api/articles/{id}, /api/meta
 │
 ├── scripts/                    # CLI 진입점 (typer)
 │   ├── sync.py                 # 동기화: law full|daily|reindex, prec full|daily
@@ -334,17 +337,20 @@ Phase 2의 기능을 **Tool**로 노출하고, LLM이 여러 단계로 조사하
   - [x] 법령 파서 (조/항/호/목)
   - [x] PostgreSQL 스키마 + 유효기간 모델
   - [x] 전체 배치 · 일배치 (개정·정정·삭제·폐지 반영)
-  - [ ] Docker 환경에서 PostgreSQL · Milvus 연동 확인
-  - [ ] 현행법령 전체 적재 (`sync law full`), 일배치 cron 등록
+  - [x] Docker 환경에서 PostgreSQL · Milvus 연동 확인
+  - [x] 현행법령 전체 적재 (백업 복원: 6,636개 버전, 청크 298,560건)
+  - [ ] 일배치 cron 등록
   - [ ] 판례 파서 · 판례 일배치
 - [ ] **Phase 2 – RAG**
   - [ ] 평가셋 초안
-  - [ ] Milvus Standalone 구성 + collection 스키마 생성
-  - [ ] 조문 청킹 + dense/sparse 인코딩 + Milvus 적재
-  - [ ] Milvus hybrid_search + 유효기간 필터
-  - [ ] 리랭커, 구조화 쿼리 처리
+  - [x] Milvus Standalone 구성 + collection 스키마 생성
+  - [x] 조문 청킹 + dense/sparse 인코딩 + Milvus 적재
+  - [x] Milvus hybrid_search + 유효기간 필터 + 법령 종류 필터
+  - [x] 구조화 쿼리 처리 ("법령명 제N조" → 조문 바로가기)
+  - [x] `/api/search` + 검색 화면
+  - [ ] 리랭커
   - [ ] 인용 포함 답변 생성 + 인용 검증
-  - [ ] `/search`, `/answer` API
+  - [ ] `/answer` API
 - [ ] **Phase 3 – Agent**
   - [ ] Tool 정의 및 Agent 루프
   - [ ] 참조 그래프 탐색, 개정 연혁
@@ -377,8 +383,9 @@ uv run python -m scripts.sync law full --query 난민법      # 소량으로 먼
 uv run python -m scripts.sync law full                    # 현행+시행예정 약 6,700건 (API만 40분 내외, 임베딩 별도)
 uv run python -m scripts.sync law daily                   # 이후 매일 (cron)
 
-# 6. API 서버
-uv run uvicorn lawlens.api.main:app --reload  # http://localhost:8000/docs
+# 6. 검색 서버 (ml extra 필요, bge-m3 를 처음 한 번 내려받음 약 2.3GB)
+uv run uvicorn lawlens.api.main:app           # 검색 화면 http://localhost:8000/ , API 문서 /docs
+                                              # 시작 후 15초 정도 모델을 불러온다 (/health 의 model: ready)
 ```
 
 **개발 명령**

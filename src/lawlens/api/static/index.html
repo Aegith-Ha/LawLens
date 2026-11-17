@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LawLens 법령 검색</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%231f4e8c'/><path d='M9 22l7-12 7 12M11.5 18h9' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --surface: #fff; --surface-2: #f0f2f5; --border: #dfe3e8;
+  --text: #1b1f24; --muted: #5f6b7a; --faint: #8a95a3;
+  --accent: #1f4e8c; --accent-soft: #e6eef8; --accent-text: #fff;
+  --exact: #8a5a00; --exact-soft: #fff6e0; --exact-border: #f0d79a;
+  --mark: #fff1a8; --danger: #b42318; --danger-soft: #fdecea;
+  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --surface: #181c21; --surface-2: #20252c; --border: #2c333c;
+    --text: #e6e9ed; --muted: #9aa5b1; --faint: #6f7a87;
+    --accent: #7fb0ec; --accent-soft: #1d2b3d; --accent-text: #0e1726;
+    --exact: #f2c45a; --exact-soft: #2a2414; --exact-border: #5a4920;
+    --mark: #5a4a10; --danger: #ff8b80; --danger-soft: #3a1d1b;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.6 "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", system-ui, sans-serif;
+}
+a { color: var(--accent); }
+button, input, select { font: inherit; color: inherit; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+
+header.top { background: var(--surface); border-bottom: 1px solid var(--border); }
+header.top .wrap { display: flex; align-items: center; gap: 12px; height: 56px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; text-decoration: none; color: var(--text); }
+.brand svg { flex: none; }
+.brand small { font-weight: 400; color: var(--muted); font-size: 13px; }
+.model { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.dot.ready { background: #2e9e5b; } .dot.loading { background: #d9a400; animation: pulse 1.2s infinite; } .dot.error { background: var(--danger); }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.search { padding: 20px 0 8px; }
+form.q { display: flex; gap: 8px; }
+form.q input[type=search] {
+  flex: 1; min-width: 0; height: 48px; padding: 0 16px; font-size: 16px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow);
+}
+form.q input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.btn {
+  height: 48px; padding: 0 20px; border-radius: var(--radius); border: 0; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); font-weight: 600; white-space: nowrap;
+}
+.btn:disabled { opacity: .6; cursor: progress; }
+
+.opts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+.opt { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.opt > span:first-child { font-weight: 600; color: var(--text); }
+.opt input[type=date], .opt select {
+  height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+}
+.chip, .seg button {
+  height: 30px; padding: 0 11px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; cursor: pointer; font-size: 13px; color: var(--muted);
+}
+.chip[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; height: 30px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed=true] { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.linkbtn { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 13px; text-decoration: underline; }
+
+.status { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 18px 0 10px; font-size: 13px; color: var(--muted); min-height: 20px; }
+.status b { color: var(--text); }
+
+section.block { margin-bottom: 22px; }
+section.block > h2 { font-size: 13px; font-weight: 700; color: var(--muted); margin: 0 0 8px; letter-spacing: .02em; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 10px; box-shadow: var(--shadow);
+}
+.card.exact { background: var(--exact-soft); border-color: var(--exact-border); }
+.card .head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rank { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; min-width: 18px; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+.card.exact .badge.kind { background: transparent; color: var(--exact); border-color: var(--exact-border); font-weight: 700; }
+.law { font-weight: 700; font-size: 16px; }
+.label { font-weight: 600; }
+.crumb { font-size: 12px; color: var(--faint); margin-top: 2px; overflow-wrap: anywhere; }
+.body { margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.75; }
+.body.clamp { display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+.foot { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.foot .sp { flex: 1; }
+.foot .score { font-variant-numeric: tabular-nums; color: var(--faint); }
+.foot a, .foot button.linkbtn { font-size: 12.5px; }
+
+.notice { padding: 10px 14px; border-radius: var(--radius); background: var(--surface-2); color: var(--muted); font-size: 13.5px; margin-bottom: 12px; }
+.notice.err { background: var(--danger-soft); color: var(--danger); }
+
+.empty { text-align: center; padding: 48px 0 24px; color: var(--muted); }
+.empty h1 { font-size: 22px; color: var(--text); margin: 0 0 6px; }
+.empty p { margin: 0 0 18px; }
+.examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+
+.skeleton { height: 118px; border-radius: var(--radius); margin-bottom: 10px;
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%); background-size: 200% 100%;
+  animation: shimmer 1.2s infinite; border: 1px solid var(--border); }
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+dialog { width: min(760px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--border);
+  border-radius: 14px; background: var(--surface); color: var(--text); }
+dialog::backdrop { background: rgba(10,14,20,.45); }
+dialog .dh { position: sticky; top: 0; background: var(--surface); padding: 16px 20px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: flex-start; }
+dialog .dh h3 { margin: 0; font-size: 17px; }
+dialog .dh .x { margin-left: auto; background: none; border: 0; font-size: 22px; line-height: 1; cursor: pointer; color: var(--muted); padding: 2px 6px; }
+dialog .db { padding: 14px 20px 20px; }
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 13px; margin: 0 0 14px; color: var(--muted); }
+dl.meta dt { font-weight: 600; color: var(--text); } dl.meta dd { margin: 0; }
+
+footer { color: var(--faint); font-size: 12px; padding: 24px 0 40px; text-align: center; }
+
+@media (max-width: 600px) {
+  .brand small { display: none; }
+  .btn { padding: 0 14px; }
+  .opts { gap: 10px 12px; }
+  .card { padding: 12px 13px; }
+  .body.clamp { -webkit-line-clamp: 9; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="currentColor" style="color:var(--accent)"/><path d="M9 22l7-12 7 12M11.5 18h9" stroke="var(--surface)" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      LawLens <small>법령 하이브리드 검색</small>
+    </a>
+    <div class="model" id="model" title="검색 모델(bge-m3) 상태"><span class="dot"></span><span>모델 확인 중</span></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="search">
+    <form class="q" id="form" role="search">
+      <input type="search" id="q" name="q" placeholder="예: 집주인이 보증금을 안 돌려줘요 · 민법 제750조" autocomplete="off" maxlength="500" aria-label="검색어" autofocus>
+      <button class="btn" id="go" type="submit">검색</button>
+    </form>
+    <div class="opts">
+      <div class="opt">
+        <span>기준일</span>
+        <input type="date" id="asof" aria-label="기준일">
+        <button type="button" class="linkbtn" id="today">현행</button>
+      </div>
+      <div class="opt" id="kinds" role="group" aria-label="법령 종류"><span>종류</span></div>
+      <div class="opt">
+        <span>방식</span>
+        <div class="seg" id="mode" role="group" aria-label="검색 방식">
+          <button type="button" data-v="hybrid" title="의미 + 키워드 (RRF)">하이브리드</button>
+          <button type="button" data-v="dense" title="bge-m3 dense 벡터">의미</button>
+          <button type="button" data-v="sparse" title="bge-m3 sparse 벡터">키워드</button>
+        </div>
+      </div>
+      <div class="opt">
+        <span>개수</span>
+        <select id="limit" aria-label="결과 수"><option>10</option><option>20</option><option>30</option></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="status" id="status" aria-live="polite"></div>
+  <div id="out"></div>
+</main>
+
+<footer class="wrap">법령 데이터: 국가법령정보 공동활용 Open API · 검색 결과는 참고용이며 법률 자문이 아닙니다.</footer>
+
+<dialog id="dlg" aria-labelledby="dlg-title">
+  <div class="dh"><div><h3 id="dlg-title"></h3><div class="crumb" id="dlg-crumb"></div></div><button class="x" type="button" aria-label="닫기" onclick="dlg.close()">×</button></div>
+  <div class="db" id="dlg-body"></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { kinds: new Set(), mode: "hybrid", today: "" };
+let inflight = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtDate = (d) => (d ? d.replaceAll("-", ".") : "");
+const validity = (a) => `시행 ${fmtDate(a.valid_from) || "?"} ~ ${a.valid_to ? fmtDate(a.valid_to) : "현행"}`;
+
+// 검색어 강조: 2글자 이상 단어, 끝의 흔한 조사는 떼고 찾는다
+const JOSA = /(은|는|이|가|을|를|에|에서|의|로|으로|과|와|도|만|요|어요|아요|해요|줘요)$/;
+function terms(q) {
+  const out = new Set();
+  for (let w of q.split(/[\s,.?!·「」()]+/)) {
+    if (/^제\d+조/.test(w)) { out.add(w.match(/^제\d+조(의\d+)?/)[0]); continue; }
+    w = w.replace(JOSA, "");
+    if (w.length >= 2) out.add(w);
+  }
+  return [...out].sort((a, b) => b.length - a.length);
+}
+function highlight(text, ts) {
+  const safe = esc(text);
+  if (!ts.length) return safe;
+  const re = new RegExp("(" + ts.map((t) => esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")", "g");
+  return safe.replace(re, "<mark>$1</mark>");
+}
+
+function lawLink(a) {
+  // 현행 조문만 법제처 조문 주소로 연결한다 (과거 시점은 법령 이름 페이지)
+  const art = a.article_no && a.article_no !== "0" ? "/" + encodeURIComponent("제" + a.article_no.replace("의", "조의").replace(/^(\d+)$/, "$1조")) : "";
+  const base = "https://www.law.go.kr/" + encodeURIComponent("법령") + "/" + encodeURIComponent(a.law_name);
+  return a.valid_to ? base : base + art;
+}
+
+// 조문 본문은 "제750조(불법행위의 내용) 고의 또는…" 처럼 제목으로 시작해서 카드 제목과 겹친다
+function stripLabel(text, label) {
+  return label && text.startsWith(label) ? text.slice(label.length).replace(/^[ \t]+/, "").replace(/^\n/, "") : text;
+}
+
+function card(a, i, ts, exact) {
+  const crumb = a.path && a.path.length ? a.path.join(" › ") : "";
+  const body = stripLabel(a.text, a.label);
+  return `<article class="card${exact ? " exact" : ""}">
+    <div class="head">
+      ${exact ? '<span class="badge kind">조문 바로가기</span>' : `<span class="rank">${i + 1}</span>`}
+      <span class="law">${esc(a.law_name)}</span>
+      <span class="label">${highlight(a.label || "제" + a.article_no + "조", ts)}</span>
+      <span class="badge">${esc(a.law_type)}</span>
+    </div>
+    ${crumb ? `<div class="crumb">${esc(crumb)}</div>` : ""}
+    <div class="body${exact ? "" : " clamp"}">${highlight(body, ts)}</div>
+    <div class="foot">
+      <span>${validity(a)}</span>
+      ${a.matched_chunks > 1 && !exact ? `<span>일치 부분 ${a.matched_chunks}곳</span>` : ""}
+      <span class="sp"></span>
+      ${exact ? "" : `<span class="score" title="${state.mode === "hybrid" ? "RRF 점수" : "유사도"}">${a.score.toFixed(4)}</span>`}
+      <button type="button" class="linkbtn" data-article="${esc(a.article_id)}">전체 조문</button>
+      <a href="${lawLink(a)}" target="_blank" rel="noopener">법제처</a>
+    </div>
+  </article>`;
+}
+
+function render(r) {
+  const ts = terms(r.query);
+  const asof = r.as_of === state.today ? "현행" : fmtDate(r.as_of) + " 기준";
+  const modeName = { hybrid: "하이브리드", dense: "의미", sparse: "키워드" }[r.mode];
+  $("status").innerHTML = `<span><b>${r.results.length}</b>개 조문</span><span>${asof}</span><span>${modeName}</span><span>${(r.took_ms / 1000).toFixed(2)}초</span>`;
+  let html = "";
+  if (r.missing.length) {
+    html += `<div class="notice">${r.missing.map(esc).join(", ")}: ${asof === "현행" ? "현행 법령에서" : "이 기준일에"} 찾지 못했습니다. 법령 이름이 정확한지, 기준일이 수집된 기간 안인지 확인해 주세요.</div>`;
+  }
+  if (r.exact.length) {
+    html += `<section class="block"><h2>조문 바로가기</h2>${r.exact.map((a, i) => card(a, i, ts, true)).join("")}</section>`;
+  }
+  html += `<section class="block">${r.exact.length ? "<h2>관련 조문</h2>" : ""}${
+    r.results.length ? r.results.map((a, i) => card(a, i, ts, false)).join("") : '<div class="notice">결과가 없습니다. 기준일이나 종류 필터를 바꿔 보세요.</div>'
+  }</section>`;
+  $("out").innerHTML = html;
+}
+
+function renderEmpty() {
+  $("status").innerHTML = "";
+  const ex = ["집주인이 전세 보증금을 안 돌려줘요", "민법 제750조", "부당해고 구제 신청", "난민 인정 신청 절차", "개인정보 유출 시 통지 의무"];
+  $("out").innerHTML = `<div class="empty"><h1>무엇을 찾고 계신가요?</h1>
+    <p>상황을 문장으로 쓰거나 "법령명 제N조"로 바로 찾을 수 있습니다.</p>
+    <div class="examples">${ex.map((e) => `<button type="button" class="chip" data-example="${esc(e)}">${esc(e)}</button>`).join("")}</div></div>`;
+}
+
+function params() {
+  return {
+    query: $("q").value.trim(),
+    limit: Number($("limit").value),
+    as_of: $("asof").value || null,
+    kinds: state.kinds.size ? [...state.kinds] : null,
+    mode: state.mode,
+  };
+}
+
+function syncUrl(p) {
+  const u = new URLSearchParams();
+  if (p.query) u.set("q", p.query);
+  if (p.as_of && p.as_of !== state.today) u.set("as_of", p.as_of);
+  if (p.kinds) u.set("kinds", p.kinds.join(","));
+  if (p.mode !== "hybrid") u.set("mode", p.mode);
+  if (p.limit !== 10) u.set("limit", p.limit);
+  const qs = u.toString();
+  const url = qs ? "?" + qs : location.pathname;
+  if (url !== location.search) history.pushState(null, "", url);
+}
+
+async function run(push = true) {
+  const p = params();
+  if (!p.query) { renderEmpty(); if (push) syncUrl(p); return; }
+  if (push) syncUrl(p);
+  document.title = p.query + " - LawLens";
+  inflight?.abort();
+  inflight = new AbortController();
+  $("go").disabled = true;
+  $("status").textContent = state.model === "ready" ? "검색 중…" : "검색 모델을 불러오는 중입니다. 처음 한 번은 수십 초 걸릴 수 있습니다…";
+  $("out").innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  try {
+    const res = await fetch("/api/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p), signal: inflight.signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `검색 실패 (${res.status})`);
+    render(data);
+    pollModel();
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    $("status").textContent = "";
+    $("out").innerHTML = `<div class="notice err">${esc(e.message || e)}<br>Milvus와 PostgreSQL 컨테이너가 떠 있는지 확인해 주세요.</div>`;
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+async function openArticle(id) {
+  $("dlg-title").textContent = "불러오는 중…";
+  $("dlg-crumb").textContent = "";
+  $("dlg-body").innerHTML = "";
+  dlg.showModal();
+  try {
+    const res = await fetch("/api/articles/" + encodeURIComponent(id));
+    const a = await res.json();
+    if (!res.ok) throw new Error(a.detail || res.status);
+    const label = a.article_no === "0" ? "본문" : `제${a.article_no.replace("의", "조의").replace(/^(\d+)$/, "$1조")}${a.title ? `(${a.title})` : ""}`;
+    $("dlg-title").textContent = `${a.law_name} ${label}`;
+    $("dlg-crumb").textContent = a.path || "";
+    const rows = [
+      ["종류", [a.law_type, a.ministry].filter(Boolean).join(" · ")],
+      ["시행", `${fmtDate(a.valid_from)} ~ ${a.valid_to ? fmtDate(a.valid_to) : "현행"}`],
+      ["공포", [fmtDate(a.promulgation_date), a.promulgation_no && `제${a.promulgation_no}호`, a.revision_type].filter(Boolean).join(" · ")],
+    ].filter((r) => r[1]);
+    $("dlg-body").innerHTML = `<dl class="meta">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+      <div class="body">${highlight(a.text, terms($("q").value))}</div>`;
+  } catch (e) {
+    $("dlg-title").textContent = "조문을 불러오지 못했습니다";
+    $("dlg-body").innerHTML = `<div class="notice err">${esc(e.message || e)}</div>`;
+  }
+}
+
+async function pollModel() {
+  try {
+    const h = await (await fetch("/health")).json();
+    state.model = h.model;
+    const label = { ready: "검색 모델 준비됨", loading: "검색 모델 불러오는 중", error: "검색 모델 오류" }[h.model] || h.model;
+    $("model").innerHTML = `<span class="dot ${esc(h.model)}"></span><span>${label}</span>`;
+    if (h.model === "loading") setTimeout(pollModel, 3000);
+  } catch {
+    $("model").innerHTML = '<span class="dot error"></span><span>서버 연결 안 됨</span>';
+  }
+}
+
+function setPressed(container, pred) {
+  for (const b of container.querySelectorAll("button")) b.setAttribute("aria-pressed", String(pred(b)));
+}
+
+function loadUrl() {
+  const u = new URLSearchParams(location.search);
+  $("q").value = u.get("q") || "";
+  $("asof").value = u.get("as_of") || state.today;
+  state.kinds = new Set((u.get("kinds") || "").split(",").filter(Boolean));
+  state.mode = u.get("mode") || "hybrid";
+  $("limit").value = u.get("limit") || "10";
+  setPressed($("kinds"), (b) => state.kinds.has(b.dataset.v));
+  setPressed($("mode"), (b) => b.dataset.v === state.mode);
+}
+
+async function init() {
+  pollModel();
+  const meta = await (await fetch("/api/meta")).json();
+  state.today = meta.today;
+  $("kinds").insertAdjacentHTML("beforeend", meta.kinds.map((k) => `<button type="button" class="chip" data-v="${esc(k)}" aria-pressed="false">${esc(k)}</button>`).join(""));
+  loadUrl();
+  run(false);
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
+$("today").addEventListener("click", () => { $("asof").value = state.today; if ($("q").value.trim()) run(); });
+$("asof").addEventListener("change", () => { if ($("q").value.trim()) run(); });
+$("limit").addEventListener("change", () => { if ($("q").value.trim()) run(); });
+$("kinds").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-v]"); if (!b) return;
+  state.kinds.has(b.dataset.v) ? state.kinds.delete(b.dataset.v) : state.kinds.add(b.dataset.v);
+  b.setAttribute("aria-pressed", String(state.kinds.has(b.dataset.v)));
+  if ($("q").value.trim()) run();
+});
+$("mode").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-v]"); if (!b) return;
+  state.mode = b.dataset.v;
+  setPressed($("mode"), (x) => x.dataset.v === state.mode);
+  if ($("q").value.trim()) run();
+});
+$("out").addEventListener("click", (e) => {
+  const ex = e.target.closest("[data-example]");
+  if (ex) { $("q").value = ex.dataset.example; run(); return; }
+  const art = e.target.closest("[data-article]");
+  if (art) openArticle(art.dataset.article);
+});
+dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });
+window.addEventListener("popstate", () => { loadUrl(); run(false); });
+init();
+</script>
+</body>
+</html>

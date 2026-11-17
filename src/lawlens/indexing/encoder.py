@@ -27,12 +27,15 @@ class BGEM3Encoder:
     def __init__(
         self,
         model_name: str = "BAAI/bge-m3",
-        use_fp16: bool = True,
+        use_fp16: bool | None = None,
         batch_size: int = 16,
         max_length: int = 1024,
     ) -> None:
-        from FlagEmbedding import BGEM3FlagModel  # 무거운 의존성이므로 지연 import
+        import torch  # 무거운 의존성이므로 지연 import
+        from FlagEmbedding import BGEM3FlagModel
 
+        if use_fp16 is None:
+            use_fp16 = torch.cuda.is_available()  # CPU 에서 fp16 은 느리거나 지원되지 않는다
         self._model: Any = BGEM3FlagModel(model_name, use_fp16=use_fp16)
         self.batch_size = batch_size
         self.max_length = max_length
