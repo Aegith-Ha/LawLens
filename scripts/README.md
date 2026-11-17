@@ -13,7 +13,7 @@ uv run python -m scripts.sync --help
 | [sync.py](sync.py) | 동기화. `law`: 법령 수집·적재·색인 (전체 배치 / 일배치 / 재색인), `prec`: 판례 (구현 예정) | `.env`의 `LAW_API_OC`, PostgreSQL, Milvus |
 | [ingest.py](ingest.py) | 원본(raw) 수집만. 현재는 판례 수집용 | `LAW_API_OC` |
 | [init_milvus.py](init_milvus.py) | Milvus collection 생성 | Milvus |
-| [eval.py](eval.py) | 검색 평가 (아직 구현 전) | – |
+| [eval.py](eval.py) | 평가셋 만들기 · 검색 평가 | PostgreSQL, Milvus (B 만들기는 `ANTHROPIC_API_KEY`) |
 
 PostgreSQL과 Milvus는 `docker compose up -d`로 띄웁니다.
 
@@ -118,6 +118,12 @@ uv run python -m scripts.init_milvus --drop   # 기존 collection 삭제 후 재
 
 ---
 
-## eval.py — 검색 평가 (구현 예정)
+## eval.py — 검색 평가
 
-`eval/datasets/*.jsonl`의 질문으로 검색해 Recall@k, MRR을 계산할 예정입니다. 지금은 실행하면 "아직 구현되지 않았습니다"를 출력하고 종료합니다.
+평가셋으로 검색해 Recall@k · Hit@k · MRR · nDCG · 지연시간을 계산합니다. **실행 방법, 옵션, 지표 읽는 법은 [eval/README.md](../eval/README.md)에 있습니다.**
+
+```bash
+uv run python -m scripts.eval run eval/datasets/expc.jsonl --sample 300   # 평가 실행 → eval/reports/<시각>/report.md
+uv run python -m scripts.eval build-expc                                  # 평가셋 C: 법령해석례
+uv run python -m scripts.eval build-synth --n 300                         # 평가셋 B: 합성 (유료, ANTHROPIC_API_KEY)
+```

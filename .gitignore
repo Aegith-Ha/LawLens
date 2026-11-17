@@ -27,3 +27,7 @@ volumes/
 .idea/
 
 logs/
+
+# 평가 실행 결과
+eval/reports/
+eval/cache/

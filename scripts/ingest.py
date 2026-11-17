@@ -4,6 +4,7 @@
   uv run python -m scripts.ingest --query 민법 --max-pages 1          # 현행 법령 (eflaw, nw=3)
   uv run python -m scripts.ingest --query 민법 --nw 1,2,3             # 연혁 · 시행예정 포함
   uv run python -m scripts.ingest --target prec --query 손해배상 --max-pages 1
+  uv run python -m scripts.ingest --target expc --sort ddes --max-pages 5   # 최근 법령해석례 500건
 """
 
 import logging
@@ -26,6 +27,9 @@ def main(
     nw: str = typer.Option(
         "3", help="eflaw 전용. 1: 연혁, 2: 시행예정, 3: 현행 (쉼표로 조합, 예: 1,2,3)"
     ),
+    sort: str | None = typer.Option(
+        None, help="목록 정렬 (lasc/ldes: 이름, dasc/ddes: 날짜, nasc/ndes: 번호)"
+    ),
     max_pages: int | None = typer.Option(None, help="최대 페이지 수 (테스트용)"),
     overwrite: bool = typer.Option(False, help="이미 받은 문서도 다시 받기"),
 ) -> None:
@@ -34,6 +38,8 @@ def main(
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     search_params = {"nw": nw} if target is Target.EFLAW else {}
+    if sort:
+        search_params["sort"] = sort
     settings = get_settings()
     store = RawStore(settings.raw_dir)
     with LawGoClient(settings) as client:

@@ -153,11 +153,23 @@ lawlens/
 │   ├── sync.py                 # 동기화: law full|daily|reindex, prec full|daily
 │   ├── ingest.py               # raw 수집만 (판례 등): --target prec --query 손해배상
 │   ├── init_milvus.py          # collection 생성·인덱스 빌드
-│   └── eval.py
+│   └── eval.py                 # 평가셋 만들기(build-expc, build-synth) · 평가 실행(run)
 │
-├── eval/                       # 평가
-│   ├── datasets/               # 질문 - 정답 조문/판례 쌍 (직접 구축)
-│   └── metrics.py              # Recall@k, MRR, 인용 정확도
+├── eval/                       # 평가 (10장)
+│   ├── datasets/               # 평가셋 jsonl (expc.jsonl, synth.jsonl)
+│   ├── reports/                # (git ignore) 실행 결과 report.md · items.jsonl
+│   ├── cache/                  # (git ignore) 질의 임베딩 캐시
+│   ├── README.md               # 평가 실행 방법 · 옵션 · 지표
+│   ├── dataset.py              # 평가셋 형식 · 불러오기 (golden · scoring 공통)
+│   ├── golden/                 # 평가셋(질의 + 정답) 만들기
+│   │   ├── build_expc.py       # 평가셋 C: 법령해석례 질의요지 → 인용 조문
+│   │   ├── rewrite_expc.py     # 평가셋 C 질의를 검색창 질의로 다시 쓰기
+│   │   ├── build_synth.py      # 평가셋 B: 조문 → Claude 가 만든 질문
+│   │   └── catalog.py          # 법령명 → law_id, 현행 조문 확인
+│   └── scoring/                # 평가 실행 · 점수 계산
+│       ├── runner.py           # 검색 실행 · 데이터셋/유형/방식별 집계 · 리포트
+│       ├── metrics.py          # Recall@k, Hit@k, MRR, nDCG
+│       └── embed_cache.py      # 질의 임베딩 디스크 캐시 (SQLite)
 │
 ├── data/                       # (git ignore) raw/, processed/
 ├── notebooks/                  # 탐색용
@@ -320,12 +332,19 @@ Phase 2의 기능을 **Tool**로 노출하고, LLM이 여러 단계로 조사하
 
 ## 10. 평가
 
-검색 품질을 숫자로 보지 않으면 개선 방향을 정하기 어렵기 때문에, **Phase 2 초기에 평가셋을 먼저 만듭니다.**
+검색 품질을 숫자로 보지 않으면 개선 방향을 정하기 어렵기 때문에 평가셋을 먼저 만들고, 검색을 바꿀 때마다 같은 평가셋으로 비교합니다.
 
-- **데이터셋:** 질문 50~200개 + 정답 조문/판례 ID (직접 작성, 법령해석례의 질의–회답 활용 가능)
-- **검색 지표:** Recall@k, MRR, nDCG
-- **답변 지표:** 인용 정확도(인용한 조문이 실제로 존재하고 근거가 되는지), 근거 충실도(faithfulness)
-- **회귀 방지:** 청킹·임베딩·프롬프트를 바꿀 때마다 `scripts/eval.py` 실행
+**정답 단위는 조문**(법령 ID + 조문번호)입니다. 청크나 버전 ID는 재색인·개정 때 바뀌어 평가셋이 깨지기 때문입니다.
+
+| 평가셋 | 만드는 방법 | 특징 |
+|---|---|---|
+| **C. 법령해석례** (`expc.jsonl`) | 법제처 법령해석례의 질의요지 → 안건명·회답·질의요지에 인용된 조문 | 실제 질의 + 공식 근거라 정답 품질이 좋음. 질의요지에 정답이 적혀 있어 법령명·조문번호를 가린 `expc_masked`(주 지표)와 원문 `expc_raw`로 나눔. 안건명·회답의 조문 = 핵심(2), 질의요지에만 나온 조문 = 관련(1) |
+| **B. 합성** (`synth.jsonl`) | 현행 조문을 법령 종류별 비율로 뽑아 Claude 가 일반인 질문(`situation`)·용어 질문(`term`)을 생성. 정답 = 원래 조문 | 법령 전체에 고르게 퍼짐. 법령명·조문번호·원문 구절이 들어간 질문은 걸러 냄 |
+
+- **검색 지표:** Recall@5/10/20, Hit@10, MRR@10, nDCG@10, Hit@1, 지연시간 p50/p95 — 데이터셋 · 질의 유형 · 검색 방식(hybrid/dense/sparse)별로 집계
+- **한계:** 정답이 불완전합니다(평가셋에 없는 조문도 실제로는 관련 있을 수 있음). 절대값보다 **같은 평가셋에서의 비교**에 쓰고, 오답은 `items.jsonl`로 확인합니다.
+- **답변 지표(예정):** 인용 정확도(인용한 조문이 실제로 존재하고 근거가 되는지), 근거 충실도(faithfulness)
+- **회귀 방지:** 청킹·임베딩·리랭커를 바꿀 때마다 `scripts.eval run` 실행 (실행 방법 · 옵션은 [eval/README.md](eval/README.md))
 
 ---
 

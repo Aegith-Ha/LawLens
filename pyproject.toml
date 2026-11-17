@@ -5,6 +5,7 @@ description = "국가법령정보 Open API 기반 법률 검색 RAG 및 Agent"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
+    "anthropic>=2.8.0",
     "fastapi>=0.162.4",
     "httpx>=0.28.1",
     "psycopg[binary]>=3.3.8",
