@@ -21,13 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from eval.dataset import EvalItem, Gold
 from eval.golden.build_expc import _clean
-from eval.golden.catalog import norm_name
-from lawlens.timeutil import today_kst
+from eval.golden.catalog import article_text, norm_name
 
 MODEL = "claude-opus-5-5"
 
@@ -101,24 +99,6 @@ def sample_cases(expc_path: Path, n: int, seed: str, per_law: int = 2) -> list[E
     return [item_from_dict(r) for r in picked]
 
 
-def _article_text(session: Session, law_id: str, article_no: str) -> str | None:
-    row = session.execute(
-        text(
-            "select l.name, a.article_no, coalesce(a.title, ''), a.text"
-            " from article a join law_version v using (version_key) join law l using (law_id)"
-            " where v.law_id = :lid and a.article_no = :no"
-            " and v.valid_from <= :d and v.valid_to > :d and not a.is_deleted limit 1"
-        ),
-        {"lid": law_id, "no": article_no, "d": today_kst()},
-    ).first()
-    if row is None:
-        return None
-    name, no, title, body = row
-    main, _, branch = no.partition("의")
-    label = f"제{main}조의{branch}" if branch else f"제{main}조"
-    return f"[{name} {label}{f'({title})' if title else ''}]\n{body}"
-
-
 def load_cases(items: list[EvalItem], raw_dir: Path, session: Session) -> list[Case]:
     out = []
     for it in items:
@@ -132,7 +112,7 @@ def load_cases(items: list[EvalItem], raw_dir: Path, session: Session) -> list[C
         banned = {b for b in banned if len(b) >= 3}
         core = [g for g in it.gold if g.grade == 2] or it.gold
         texts = [
-            t for g in core if g.law_id and (t := _article_text(session, g.law_id, g.article_no))
+            t for g in core if g.law_id and (t := article_text(session, g.law_id, g.article_no))
         ]
         out.append(Case(sid, f, it.gold, it.query, texts, banned))
     return out

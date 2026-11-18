@@ -4,6 +4,12 @@
   uv run python -m scripts.eval build-expc                 # C: data/raw/expc → eval/datasets/expc.jsonl
   uv run python -m scripts.eval build-synth --n 300        # B: Claude 로 합성 (ANTHROPIC_API_KEY 필요, 유료)
 
+  # 정답 다듬기 (모든 소스 공통): 후보 모으기 → 등급 판정 → 사람 표본으로 검증
+  uv run python -m scripts.eval pool eval/datasets/x.jsonl           # → x.pool.jsonl
+  uv run python -m scripts.eval judge eval/datasets/x.pool.jsonl     # → x.judged.jsonl (새 정답 평가셋)
+  uv run python -m scripts.eval judge-sample eval/datasets/x.pool.jsonl   # → x.human.jsonl
+  uv run python -m scripts.eval judge-agree eval/datasets/x.human.jsonl
+
   # 평가 실행 (결과: eval/reports/<시각>/report.md, items.jsonl)
   uv run python -m scripts.eval run eval/datasets/expc.jsonl eval/datasets/synth.jsonl
   uv run python -m scripts.eval run eval/datasets/expc.jsonl --modes hybrid,dense,sparse --sample 100
@@ -11,8 +17,11 @@
 평가셋 형식은 eval/dataset.py 참고.
 """
 
+import json
 import logging
 import random
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +44,26 @@ DATASETS = Path("eval/datasets")
 def _quiet_logs() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+@contextmanager
+def _embedding_cache(service: Any, path: Path | None, refresh: bool) -> Iterator[Any]:
+    """질의 임베딩을 검색 방식(hybrid/dense/sparse)끼리, 그리고 다음 실행 때도 다시 쓴다."""
+    typer.echo("검색 모델 불러오는 중…")
+    searcher = service.searcher  # 모델 로딩 시간이 첫 문항 지연시간에 섞이지 않게 미리 불러온다
+    if not isinstance(searcher, HybridSearcher):
+        yield None
+        return
+    inner = searcher.encoder
+    namespace = f"{get_settings().embedding_model}|max_length={getattr(inner, 'max_length', '')}"
+    cache = EmbeddingCache(inner, namespace, path, refresh=refresh)
+    searcher.encoder = cache
+    try:
+        yield cache
+    finally:
+        searcher.encoder = cache.inner
+        cache.close()
+        typer.echo(f"질의 임베딩: 캐시 {cache.hits}회, 새로 계산 {cache.misses}회")
 
 
 @app.command()
@@ -69,27 +98,8 @@ def run(
         typer.echo(f"{path.name}: {len(items)}문항")
 
     service = get_search_service()
-    typer.echo("검색 모델 불러오는 중…")
-    searcher = service.searcher  # 모델 로딩 시간이 첫 문항 지연시간에 섞이지 않게 미리 불러온다
-    embed_cache = None
-    if isinstance(searcher, HybridSearcher):
-        # 질의 임베딩을 방식(hybrid/dense/sparse)끼리, 그리고 다음 평가 때도 다시 쓴다
-        inner = searcher.encoder
-        namespace = (
-            f"{get_settings().embedding_model}|max_length={getattr(inner, 'max_length', '')}"
-        )
-        embed_cache = EmbeddingCache(
-            inner, namespace, None if no_cache else cache, refresh=refresh_cache
-        )
-        searcher.encoder = embed_cache
-    try:
+    with _embedding_cache(service, None if no_cache else cache, refresh_cache) as embed_cache:
         results = run_eval(loaded, service, mode_list, progress=typer.echo, encoder=embed_cache)
-    finally:
-        if embed_cache is not None and isinstance(searcher, HybridSearcher):
-            searcher.encoder = embed_cache.inner
-            embed_cache.close()
-    if embed_cache is not None:
-        typer.echo(f"질의 임베딩: 캐시 {embed_cache.hits}회, 새로 계산 {embed_cache.misses}회")
     summaries = summarize(results)
     config = {
         "datasets": {k: len(v) for k, v in loaded.items()},
@@ -173,7 +183,6 @@ def rewrite_expc(
     --answers 를 주면 API 를 부르지 않고 그 파일의 질의를 같은 유출 검사 · 저장 과정에 넣는다.
     output 옆에 기존 질의와 비교하는 검토 문서(.review.md)도 만든다.
     """
-    import json
     from functools import partial
 
     from eval.golden.rewrite_expc import (
@@ -204,6 +213,156 @@ def rewrite_expc(
         for r in review:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     typer.echo(f"{stats}\n→ {output} ({saved}문항), 검토: {base.with_suffix('.review.md')}")
+
+
+@app.command()
+def pool(
+    dataset: Path = typer.Argument(..., help="평가셋 jsonl (질의 + seed 정답)"),
+    depth: int = typer.Option(20, help="검색 방식 · 질의마다 상위 몇 개를 모을지"),
+    modes: str = typer.Option("hybrid,dense,sparse", help="후보를 모을 검색 방식"),
+    need: str = typer.Option("auto", help="정보 요구 설명: expc(해석례 본문) | query(질의) | auto"),
+    output: Path = typer.Option(None, help="저장 경로 (기본: <평가셋>.pool.jsonl)"),
+    cache: Path = typer.Option(EMBED_CACHE, help="질의 임베딩 캐시 파일"),
+) -> None:
+    """정답 후보 모으기: 상황마다 여러 검색 방식의 상위 결과 + 기존 정답(seed)을 합친다."""
+    from eval.golden import pool as P
+    from lawlens.api.deps import get_search_service
+
+    _quiet_logs()
+    items = load_jsonl(dataset)
+    mode_list = [SearchMode(m.strip()) for m in modes.split(",") if m.strip()]
+    if need == "auto":
+        need = "expc" if all(it.source == "expc" for it in items) else "query"
+    need_fn = (
+        P.need_from_expc(get_settings().raw_dir / "expc") if need == "expc" else P.need_from_queries
+    )
+    out = output or _sibling(dataset, "pool")
+    service = get_search_service()
+    with get_sessionmaker()() as session:
+        resolve_law_ids(items, LawCatalog.load(session).law_id)
+        with _embedding_cache(service, cache, False):
+            cases, stats = P.build(items, service, session, mode_list, depth, need_fn, typer.echo)
+    P.save(cases, out)
+    typer.echo(f"{stats}\n→ {out}")
+
+
+@app.command()
+def judge(
+    pool_path: Path = typer.Argument(..., help="pool 파일 (*.pool.jsonl)"),
+    dataset: Path = typer.Option(None, help="원래 평가셋 (기본: pool 이름에서 .pool 을 뗀 것)"),
+    answers: Path = typer.Option(
+        None, help='API 대신 미리 판정한 JSON ({상황: {"2": [키], "1": [키]}})'
+    ),
+    workers: int = typer.Option(4, help="동시 요청 수"),
+) -> None:
+    """등급 판정 → <평가셋>.judgments.jsonl, .judged.jsonl(새 정답 평가셋), .judge.md(검토 문서).
+
+    answers 가 없으면 Claude 로 판정한다 (유료, 상황 설명 · 조문 본문이 Anthropic API 로 전송됨)."""
+    from functools import partial
+
+    from eval.golden import judge as J
+    from eval.golden.pool import load as load_pool
+
+    _quiet_logs()
+    cases = load_pool(pool_path)
+    base = _base(pool_path)
+    dataset = dataset or base.with_name(base.name + ".jsonl")
+    if answers:
+        fn, label = J.from_answers(answers), str(answers)
+    else:
+        fn, label = partial(J.judge_api, _anthropic_client()), J.MODEL
+    n = sum(len(p.candidates) for p in cases)
+    typer.echo(f"상황 {len(cases)}개 · 후보 {n}개 → {label} 로 판정")
+    judged, jstats = J.judge_all(cases, fn, workers=workers, progress=typer.echo)
+    J.save_judgments(cases, judged, _sibling(base, "judgments"), label)
+    items = load_jsonl(dataset)
+    with get_sessionmaker()() as session:
+        resolve_law_ids(items, LawCatalog.load(session).law_id)
+    new_items, astats = J.apply(items, cases, judged)
+    save_jsonl(new_items, _sibling(base, "judged"))
+    md = _sibling(base, "judge").with_suffix(".md")
+    md.write_text(J.report_markdown(cases, judged, jstats, astats, label), "utf-8")
+    typer.echo(f"{jstats}\n{astats}\n→ {_sibling(base, 'judged')}, 검토: {md}")
+
+
+@app.command("judge-sample")
+def judge_sample(
+    pool_path: Path = typer.Argument(..., help="pool 파일"),
+    n: int = typer.Option(90, help="표본 수 (판정 등급별로 3분의 1씩)"),
+    seed: int = typer.Option(0, help="표본 시드"),
+) -> None:
+    """사람 판정용 표본 → <평가셋>.human.jsonl. 각 줄의 grade 를 0 · 1 · 2 로 채운 뒤 judge-agree."""
+    from eval.golden import judge as J
+    from eval.golden.pool import load as load_pool
+
+    base = _base(pool_path)
+    rows = J.sample_for_human(
+        load_pool(pool_path), J.load_judgments(_sibling(base, "judgments")), n, seed
+    )
+    out = _sibling(base, "human")
+    with out.open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    typer.echo(f"{len(rows)}건 → {out}")
+
+
+@app.command("judge-agree")
+def judge_agree(
+    human: Path = typer.Argument(..., help="grade 를 채운 *.human.jsonl"),
+) -> None:
+    """사람 판정과 판정기 판정의 일치도 (정확도 · kappa · 2차 가중 kappa · 관련/무관 kappa)."""
+    from eval.golden import judge as J
+
+    base = _base(human)
+    rows = [json.loads(ln) for ln in human.open(encoding="utf-8") if ln.strip()]
+    result = J.agreement(rows, J.load_judgments(_sibling(base, "judgments")))
+    typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@app.command()
+def split(
+    dataset: Path = typer.Argument(..., help="평가셋 jsonl"),
+    test: int = typer.Option(60, help="최종 확인용으로 떼어 둘 상황 수"),
+    seed: str = typer.Option("lawlens-split-v1", help="분할 시드 (같으면 같은 분할)"),
+) -> None:
+    """상황 단위로 조정용(.dev)과 최종 확인용(.test)으로 나눈다. user · expert 질의는 같은 쪽에 둔다.
+
+    튜닝(리랭커 등)은 .dev 로만 보고, .test 는 마지막 확인에만 쓴다."""
+    import hashlib
+
+    from eval.golden.pool import group_cases
+
+    items = load_jsonl(dataset)
+    cases = sorted(
+        group_cases(items), key=lambda c: hashlib.md5(f"{seed}:{c}".encode()).hexdigest()
+    )
+    held = set(cases[:test])
+    base = _base(dataset)
+    name = dataset.name.removesuffix(".jsonl")
+    for part, keep in (("test", True), ("dev", False)):
+        out = base.with_name(f"{name}.{part}.jsonl")
+        n = save_jsonl([it for it in items if (case_id(it) in held) == keep], out)
+        typer.echo(f"{part}: {n}문항 → {out}")
+
+
+def case_id(item: EvalItem) -> str:
+    from eval.golden.pool import case_id as _case_id
+
+    return _case_id(item)
+
+
+def _base(path: Path) -> Path:
+    """eval/datasets/x.pool.jsonl(.gz) → eval/datasets/x"""
+    name = path.name.removesuffix(".gz").removesuffix(".jsonl")
+    for suffix in (".pool", ".judgments", ".judged", ".human"):
+        name = name.removesuffix(suffix)
+    return path.with_name(name)
+
+
+def _sibling(path: Path, kind: str) -> Path:
+    """eval/datasets/x(.jsonl) → eval/datasets/x.<kind>.jsonl"""
+    base = _base(path)
+    return base.with_name(f"{base.name}.{kind}.jsonl")
 
 
 def _anthropic_client() -> Any:

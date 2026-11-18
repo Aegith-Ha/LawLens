@@ -44,3 +44,28 @@ class LawCatalog:
         )
         cat.current = {f"{law_id}:{no}" for law_id, no in rows}
         return cat
+
+
+def article_label(article_no: str) -> str:
+    """ "3의2" → "제3조의2"."""
+    main, _, branch = article_no.partition("의")
+    return f"제{main}조의{branch}" if branch else f"제{main}조"
+
+
+def article_text(
+    session: Session, law_id: str, article_no: str, as_of: date | None = None
+) -> str | None:
+    """현행(또는 as_of 시점) 조문을 "[법령명 제N조(제목)]\n본문" 으로. 없으면 None."""
+    row = session.execute(
+        text(
+            "select l.name, coalesce(a.title, ''), a.text"
+            " from article a join law_version v using (version_key) join law l using (law_id)"
+            " where v.law_id = :lid and a.article_no = :no"
+            " and v.valid_from <= :d and v.valid_to > :d and not a.is_deleted limit 1"
+        ),
+        {"lid": law_id, "no": article_no, "d": as_of or today_kst()},
+    ).first()
+    if row is None:
+        return None
+    name, title, body = row
+    return f"[{name} {article_label(article_no)}{f'({title})' if title else ''}]\n{body}"

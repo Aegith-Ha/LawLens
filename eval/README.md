@@ -2,6 +2,8 @@
 
 평가셋 질문으로 검색을 돌려서 정답 조문이 몇 위에 나오는지 측정합니다. 검색을 바꿀 때마다 같은 평가셋으로 다시 돌려 이전 결과와 비교합니다. 평가 설계의 배경은 [README 10장](../README.md#10-평가)에 있습니다.
 
+평가 질의를 만드는 방법(A~D)과 정답 정하는 방식은 [golden/README.md](golden/README.md) 에 정리했습니다.
+
 모든 명령은 프로젝트 폴더(`~/lawlens`)에서 실행합니다.
 
 ## 빠른 시작
@@ -179,6 +181,54 @@ uv run python -m scripts.eval build-synth --n 300
 
 - 유료입니다. 조문 하나당 API 요청이 1번입니다.
 - 조문 본문(공개 법령)이 Anthropic API로 전송됩니다.
+
+### 정답 다듬기 — `pool` · `judge`
+
+평가셋의 정답을 모든 소스에 공통인 방식으로 다시 정합니다. 배경은 [golden/README.md](golden/README.md)에 있습니다.
+
+1. **후보 모으기 (`pool`)**
+   - 상황(같은 해석례의 user · expert 질의)마다 검색 방식별 상위 결과와 기존 정답(seed)을 합칩니다.
+   - 후보 순서는 섞습니다. 판정자가 순위나 seed 여부를 짐작하지 못하게 하기 위해서입니다.
+2. **등급 판정 (`judge`)**
+   - 후보마다 2(핵심) / 1(관련) / 0(무관)을 매깁니다.
+   - 판정 결과로 정답을 바꾼 평가셋 `*.judged.jsonl`을 만듭니다.
+3. **사람 확인 (`judge-sample` · `judge-agree`)**
+   - 표본을 사람이 판정해 판정기와의 일치도(kappa)를 봅니다.
+
+```bash
+uv run python -m scripts.eval pool eval/datasets/expc_rewrite.jsonl --depth 10
+# → expc_rewrite.pool.jsonl
+
+uv run python -m scripts.eval judge eval/datasets/expc_rewrite.pool.jsonl
+# Claude 로 판정 (유료). 미리 판정한 파일이 있으면 --answers <파일>
+# → .judgments.jsonl (후보별 등급), .judged.jsonl (새 정답 평가셋), .judge.md (검토 문서)
+
+uv run python -m scripts.eval judge-sample eval/datasets/expc_rewrite.pool.jsonl.gz --n 90
+# → .human.jsonl 의 grade 를 0 · 1 · 2 로 채운 뒤
+uv run python -m scripts.eval judge-agree eval/datasets/expc_rewrite.human.jsonl
+```
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `pool --depth` | `20` | 검색 방식 · 질의마다 상위 몇 개를 모을지. 판정량이 이 값에 거의 비례합니다 (시범 50건: 10 → 1,486개, 20 → 2,813개) |
+| `pool --need` | `auto` | 판정자가 보는 상황 설명. `expc`(해석례 안건명 · 질의요지 · 회답, 조문 번호는 지움) / `query`(질의 그대로) |
+| `judge --answers` | 없음 | `{상황: {"2": [키], "1": [키]}}` JSON. 적지 않은 후보는 0. 키는 `law_id:조문번호` |
+
+- pool 원본(`*.pool.jsonl`)은 커서 커밋하지 않고 gzip 압축본(`*.pool.jsonl.gz`)만 커밋합니다. 법령 sync · 날짜 · 검색 코드가 바뀌면 다시 만든 pool 이 판정 당시와 달라지므로, 판정에 쓴 pool 을 보관하기 위해서입니다. `judge` · `judge-sample` 은 압축본을 그대로 읽습니다.
+- 판정되지 않은 상황, 관련 조문이 하나도 없는 상황은 `.judged.jsonl`에서 빠집니다. 원래 정답은 `meta.seeds`에 남습니다.
+- `--depth 10`으로 모았으면 11~20위 결과는 판정받지 못해 오답으로 계산됩니다. 그래서 recall@20은 낮게 나올 수 있습니다.
+- API 판정 시 상황 설명과 조문 본문(공개 자료)이 Anthropic API로 전송됩니다.
+
+### 조정용 · 최종 확인용 분할 — `split`
+
+```bash
+uv run python -m scripts.eval split eval/datasets/expc_rewrite.judged.jsonl --test 60
+# → .judged.dev.jsonl (튜닝 · 비교용), .judged.test.jsonl (최종 확인용)
+```
+
+- 상황 단위로 나눕니다. 같은 해석례의 `user` · `expert` 질의는 항상 같은 쪽에 들어갑니다.
+- 시드(`--seed`, 기본 `lawlens-split-v1`)가 같으면 항상 같은 분할입니다.
+- 리랭커 등 검색 개선은 `.dev`로만 비교하고, `.test`는 마지막 확인에만 씁니다. `.test`를 보면서 고치면 그 셋에 맞춰져서 점수를 믿을 수 없게 됩니다.
 
 ### 평가셋 형식
 

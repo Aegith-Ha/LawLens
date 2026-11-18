@@ -31,3 +31,6 @@ logs/
 # 평가 실행 결과
 eval/reports/
 eval/cache/
+
+# 정답 판정용 pool 원본 (압축본 *.pool.jsonl.gz 만 커밋)
+eval/datasets/*.pool.jsonl
