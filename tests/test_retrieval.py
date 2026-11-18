@@ -75,3 +75,18 @@ def test_milvus_schema_builds_offline() -> None:
     assert names[0] == "chunk_id"
     assert DENSE_FIELD in names and SPARSE_FIELD in names
     assert {"version_key", "valid_from", "valid_to"} <= set(names)
+
+
+def test_fuse_rrf_weights_and_dedup() -> None:
+    from lawlens.retrieval.hybrid import SearchHit, fuse_rrf
+
+    def hits(*ids: str) -> list[SearchHit]:
+        return [SearchHit(chunk_id=i, score=0.0, fields={"id": i}) for i in ids]
+
+    dense, sparse = hits("a", "b", "c"), hits("c", "d")
+    # 같은 가중치면 양쪽에 다 나온 c 가 1위
+    assert [h.chunk_id for h in fuse_rrf([dense, sparse], [0.5, 0.5], k=30)][0] == "c"
+    # dense 쪽을 크게 주면 dense 1위 a 가 1위, 결과에 중복 없음
+    out = fuse_rrf([dense, sparse], [0.95, 0.05], k=30, limit=3)
+    assert [h.chunk_id for h in out] == ["a", "c", "b"]
+    assert out[0].fields == {"id": "a"} and out[0].score > out[1].score
