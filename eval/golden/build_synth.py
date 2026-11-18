@@ -3,9 +3,10 @@
 질문이 원문 표현을 따라가면 키워드 검색에 유리해지므로, 법령명 · 조문번호 · 원문의 긴 구절을
 쓰지 말고 상황으로 묻게 하고, 생성 후에도 한 번 더 걸러 낸다.
 
-조문 본문(공개 법령)이 Anthropic API 로 전송된다.
+조문 본문(공개 법령)이 Anthropic API(claude) 또는 OpenAI(codex)로 전송된다.
 """
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -115,12 +116,7 @@ def generate_one(client: Any, s: Sample) -> dict[str, Any] | None:
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # 안전 분류기가 거절하면 서버가 다른 모델로 재시도
         output_config={"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[
-            {
-                "role": "user",
-                "content": f"법령: {s.law_name} ({s.law_type})\n조문: {s.label}\n\n{s.text}",
-            }
-        ],
+        messages=[{"role": "user", "content": _user_text(s)}],
     )
     if resp.stop_reason == "refusal":
         return None
@@ -129,12 +125,34 @@ def generate_one(client: Any, s: Sample) -> dict[str, Any] | None:
     return data
 
 
+def _user_text(s: Sample) -> str:
+    return f"법령: {s.law_name} ({s.law_type})\n조문: {s.label}\n\n{s.text}"
+
+
+def generate_codex(
+    model: str | None = None, log_dir: Any = None
+) -> Callable[[Sample], dict[str, Any] | None]:
+    """Codex CLI 로 생성 (eval.golden.codex 참고)."""
+    from pathlib import Path
+
+    from eval.golden.codex import run_json
+
+    def gen(s: Sample) -> dict[str, Any] | None:
+        log = Path(log_dir) / f"{s.law_id}-{s.article_no}.log" if log_dir else None
+        data: dict[str, Any] = run_json(f"{SYSTEM}\n\n{_user_text(s)}", SCHEMA, model, log=log)
+        return data
+
+    return gen
+
+
 def build(
     samples: list[Sample],
-    client: Any,
+    gen: Callable[[Sample], dict[str, Any] | None],
     workers: int = 4,
     progress: Callable[[str], None] | None = None,
+    keep: int | None = None,
 ) -> tuple[list[EvalItem], dict[str, int]]:
+    """조문마다 질문 2개(situation · term). keep 이 있으면 쓸 수 있는 조문을 섞은 순서대로 그만큼만 남긴다."""
     stats = {
         "samples": len(samples),
         "unusable": 0,
@@ -143,9 +161,14 @@ def build(
         "errors": 0,
         "items": 0,
     }
-    items: list[EvalItem] = []
+    per_sample: dict[int, list[EvalItem]] = {}
+    # keep 으로 자를 때 법령 종류가 고르게 남도록 해시 순서로 섞는다 (표본은 종류별로 줄지어 있음)
+    ranked = sorted(
+        samples, key=lambda s: hashlib.md5(f"{s.law_id}:{s.article_no}".encode()).hexdigest()
+    )
+    order = {id(s): i for i, s in enumerate(ranked)}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(generate_one, client, s): s for s in samples}
+        futures = {pool.submit(gen, s): s for s in samples}
         for i, fut in enumerate(as_completed(futures), start=1):
             s = futures[fut]
             try:
@@ -161,6 +184,7 @@ def build(
             if not data.get("usable"):
                 stats["unusable"] += 1
                 continue
+            got: list[EvalItem] = []
             gold = [Gold(article_no=s.article_no, law_name=s.law_name, law_id=s.law_id, grade=2)]
             meta = {"law_type": s.law_type, "label": s.label}
             for typ in ("situation", "term"):
@@ -168,18 +192,22 @@ def build(
                 if _leaks(q, s):
                     stats["leaked"] += 1
                     continue
-                items.append(
+                got.append(
                     EvalItem(
                         id=f"synth-{s.law_id}-{s.article_no}-{typ}",
                         query=q,
                         gold=gold,
-                        type=typ,
+                        type=f"synth_{typ}",
                         source="synth",
                         meta=meta,
                     )
                 )
-                stats["items"] += 1
+            if got:
+                per_sample[order[id(s)]] = got
             if progress and i % 25 == 0:
                 progress(f"{i}/{len(samples)}")
-    items.sort(key=lambda it: it.id)
+    kept = sorted(per_sample)[:keep] if keep else sorted(per_sample)
+    stats["kept_articles"] = len(kept)
+    items = sorted((it for k in kept for it in per_sample[k]), key=lambda it: it.id)
+    stats["items"] = len(items)
     return items, stats

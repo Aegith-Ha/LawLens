@@ -139,7 +139,7 @@ expc: 10/300  경과 0.3분, 남은 시간 약 8.7분
 | 파일 | 평가셋 | 문항 |
 |---|---|---|
 | `expc.jsonl` | C. 법령해석례 | 1,918 (해석례 959건 × masked/raw) |
-| `synth.jsonl` | B. 합성 | 아직 없음 (`ANTHROPIC_API_KEY` 필요) |
+| `synth.jsonl` | B. 합성 | 30개 조문 × situation/term = 60 (정답은 `synth.judged.jsonl`) |
 | `scenario.jsonl` | 상황 시나리오 (golden/README 의 C) | 일반인 상황 90개 × user/short |
 
 ### C. 법령해석례 — `build-expc`
@@ -171,17 +171,21 @@ uv run python -m scripts.eval build-expc
 ```bash
 # .env 에 ANTHROPIC_API_KEY=... 를 넣은 뒤
 uv run python -m scripts.eval build-synth --n 300
+# Codex 로 (로그인한 계정 사용량). 50개를 뽑아 쓸 수 있는 조문 30개만 남김
+uv run python -m scripts.eval build-synth --n 50 --keep 30 --backend codex
 ```
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
 | `--n` | `300` | 뽑을 조문 수 (조문당 질문 최대 2개) |
+| `--keep` | 없음 | 쓸 수 있는 조문을 해시 순서로 이만큼만 남깁니다. 법령 종류가 고르게 남습니다 |
+| `--backend` | `claude` | `claude`(Anthropic API) / `codex`(Codex CLI) |
 | `--seed` | `lawlens-eval-v1` | 같으면 같은 조문이 뽑힘 |
 | `--workers` | `4` | 동시 요청 수 |
 | `--output` | `eval/datasets/synth.jsonl` | 저장 경로 |
 
-- 유료입니다. 조문 하나당 API 요청이 1번입니다.
-- 조문 본문(공개 법령)이 Anthropic API로 전송됩니다.
+- 조문 하나당 요청이 1번입니다. `claude`는 유료입니다.
+- 조문 본문(공개 법령)이 Anthropic API 또는 OpenAI로 전송됩니다.
 
 ### 상황 시나리오 — `scenario`
 
@@ -293,4 +297,4 @@ uv run python -m scripts.eval split eval/datasets/expc_rewrite.judged.jsonl --te
 | `법령명을 찾지 못한 정답 N개` | 법령명 오타이거나, 폐지 등으로 DB에 없는 법령 |
 | 처음 실행이 오래 걸림 | 정상입니다. 질의 임베딩 때문이며, 같은 질의는 다음부터 캐시를 씁니다 |
 | 결과가 이전과 다름 | `--sample`·`--seed`가 같은지, 데이터 동기화(sync)로 법령이 바뀌지 않았는지 `config.json`에서 확인 |
-| `Anthropic 인증 정보가 없습니다` | `.env`에 `ANTHROPIC_API_KEY`가 있는지 (B 만들 때만 필요) |
+| `Anthropic 인증 정보가 없습니다` | `.env`에 `ANTHROPIC_API_KEY`가 있는지 (`--backend claude` 로 생성 · 판정할 때만 필요) |

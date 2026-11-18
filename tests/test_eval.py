@@ -191,3 +191,20 @@ def test_embedding_cache_reuses_across_runs(tmp_path: Path) -> None:
     mem = EmbeddingCache(Inner(), "m1", None)  # --no-cache
     mem.encode_queries(["q1"])
     assert not mem.hit and len(calls) == 4
+
+
+def test_synth_build_keep_and_types() -> None:
+    from eval.golden.build_synth import build
+
+    samples = [Sample(f"L{i}", f"가{i}법", "법률", "1", "제1조", "본문") for i in range(5)]
+
+    def gen(s: Sample) -> dict[str, object] | None:
+        if s.law_id == "L0":
+            return {"usable": False, "situation": "", "term": ""}
+        return {"usable": True, "situation": f"{s.law_id} 상황 질문", "term": f"{s.law_id} 용어"}
+
+    items, stats = build(samples, gen, workers=2, keep=3)
+    assert stats["unusable"] == 1 and stats["kept_articles"] == 3 and stats["items"] == 6
+    assert {it.type for it in items} == {"synth_situation", "synth_term"}
+    assert all(it.gold[0].grade == 2 and it.source == "synth" for it in items)
+    assert "L0" not in {it.gold[0].law_id for it in items}

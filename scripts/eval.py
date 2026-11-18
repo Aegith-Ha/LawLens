@@ -139,30 +139,34 @@ def build_expc(
 @app.command("build-synth")
 def build_synth(
     n: int = typer.Option(300, help="뽑을 조문 수 (조문당 질문 최대 2개)"),
+    keep: int = typer.Option(None, help="쓸 수 있는 조문을 표본 순서대로 이만큼만 남김"),
     seed: str = typer.Option("lawlens-eval-v1", help="표본 시드 (같으면 같은 조문)"),
+    backend: str = typer.Option(
+        "claude", help="생성기: claude (Anthropic API) | codex (Codex CLI)"
+    ),
+    model: str = typer.Option(None, help="생성 모델 (codex 만. 기본: codex 설정값)"),
     workers: int = typer.Option(4, help="동시 요청 수"),
     output: Path = typer.Option(DATASETS / "synth.jsonl", help="저장 경로"),
 ) -> None:
-    """평가셋 B: 현행 조문을 뽑아 Claude 로 질문을 만든다 (유료, 조문 본문이 Anthropic API 로 전송됨)."""
-    import anthropic
+    """평가셋 B: 현행 조문을 뽑아 질문을 만든다. 정답 seed = 원래 조문 (pool · judge 로 다듬는다).
 
-    from eval.golden.build_synth import MODEL, build, sample_articles
+    조문 본문이 Anthropic API(claude, 유료) 또는 OpenAI(codex, 로그인한 계정 사용량)로 전송된다."""
+    from functools import partial
+
+    from eval.golden import build_synth as B
 
     _quiet_logs()
-    # .env 의 ANTHROPIC_API_KEY 는 SDK 가 직접 읽지 않으므로 설정에서 넘긴다 (없으면 환경변수 · ant 로그인)
-    secret = get_settings().anthropic_api_key
-    key = secret.get_secret_value() if secret else None
-    try:
-        client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
-    except anthropic.AnthropicError as e:
-        typer.echo(
-            f"Anthropic 인증 정보가 없습니다 ({e}). .env 에 ANTHROPIC_API_KEY 를 넣어 주세요."
-        )
-        raise typer.Exit(1) from e
+    if backend == "codex":
+        gen = B.generate_codex(model, log_dir=Path(".cache/codex_synth"))
+        label = f"codex:{model or 'default'}"
+    elif backend == "claude":
+        gen, label = partial(B.generate_one, _anthropic_client()), B.MODEL
+    else:
+        raise typer.BadParameter(f"backend: {backend}")
     with get_sessionmaker()() as session:
-        samples = sample_articles(session, n, seed)
-    typer.echo(f"조문 {len(samples)}개 → {MODEL} 로 질문 생성")
-    items, stats = build(samples, client, workers=workers, progress=typer.echo)
+        samples = B.sample_articles(session, n, seed)
+    typer.echo(f"조문 {len(samples)}개 → {label} 로 질문 생성")
+    items, stats = B.build(samples, gen, workers=workers, progress=typer.echo, keep=keep)
     saved = save_jsonl(items, output)
     typer.echo(f"{stats}\n→ {output} ({saved}문항)")
 
