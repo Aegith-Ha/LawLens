@@ -11,6 +11,8 @@ seed 와 판정을 비교한 표, 사람 판정과의 일치도(kappa)로 판정
 
 import json
 import random
+import subprocess
+import tempfile
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -87,7 +89,35 @@ def judge_api(client: Any, p: PoolCase) -> Judgments | None:
     )
     if resp.stop_reason == "refusal":
         return None
-    txt = next((b.text for b in resp.content if b.type == "text"), "")
+    return _parse(p, next((b.text for b in resp.content if b.type == "text"), ""))
+
+
+def judge_codex(
+    p: PoolCase, model: str | None = None, timeout: int = 900, log_dir: Path | None = None
+) -> Judgments | None:
+    """Codex CLI (`codex exec`) 로 판정. 로그인한 ChatGPT 계정의 사용량을 쓴다.
+
+    도구를 쓰지 않도록 빈 임시 폴더에서 읽기 전용 샌드박스로 실행하고, 응답은 SCHEMA 로 고정한다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        schema, out = Path(tmp, "schema.json"), Path(tmp, "out.json")
+        schema.write_text(json.dumps(SCHEMA), "utf-8")
+        cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
+               "-C", tmp, "--output-schema", str(schema), "-o", str(out), "--color", "never"]  # fmt: skip
+        if model:
+            cmd += ["-m", model]
+        r = subprocess.run(
+            [*cmd, "-"], input=f"{SYSTEM}\n\n{prompt(p)}", capture_output=True, text=True,
+            timeout=timeout,
+        )  # fmt: skip
+        if log_dir:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / f"{p.case}.log").write_text(r.stdout + "\n--- stderr ---\n" + r.stderr)
+        if r.returncode != 0 or not out.exists():
+            raise RuntimeError(f"codex 종료 코드 {r.returncode}: {r.stderr[-500:]}")
+        return _parse(p, out.read_text("utf-8"))
+
+
+def _parse(p: PoolCase, txt: str) -> Judgments:
     by_id = {f"c{i}": c.key for i, c in enumerate(p.candidates, start=1)}
     out: Judgments = {}
     for j in json.loads(txt)["judgments"]:
@@ -332,3 +362,50 @@ def report_markdown(
             lines.append(f"- **{j[c.key]}** {head}{seed}")
         lines.append("")
     return "\n".join(lines)
+
+
+# ── 두 판정기 합치기 ─────────────────────────────────────────────────────────
+
+
+def merge(
+    pool: list[PoolCase],
+    a: dict[str, Judgments],
+    b: dict[str, Judgments],
+    overrides: dict[str, dict[str, int]] | None = None,
+) -> tuple[dict[str, dict[str, list[str]]], dict[str, int], list[dict[str, Any]]]:
+    """두 판정(a, b)을 합쳐 answers 형식({상황: {"2": [키], "1": [키]}})으로 만든다.
+
+    - 같으면 그대로.
+    - 1 차이: seed 면 높은 쪽 (해석례가 인용했으니 관련은 있다), 아니면 b.
+      b 는 조문 전문을 읽은 판정기로 둔다 (a 는 근거가 얕은 판정).
+    - 0 ↔ 2: overrides({상황: {키: 등급}})로 사람이 정한다. 없으면 1 로 두고 미해결로 보고한다.
+    → (answers, 통계, 0 ↔ 2 목록)"""
+    overrides = overrides or {}
+    answers: dict[str, dict[str, list[str]]] = {}
+    stats = Counter[str]()
+    conflicts: list[dict[str, Any]] = []
+    for p in pool:
+        if p.case not in a or p.case not in b:
+            stats["case_missing"] += 1
+            continue
+        out: dict[str, list[str]] = {"2": [], "1": []}
+        for c in p.candidates:
+            ga, gb = a[p.case][c.key], b[p.case][c.key]
+            ov = overrides.get(p.case, {}).get(c.key)
+            if ov is not None:
+                g, why = ov, "override"
+            elif ga == gb:
+                g, why = ga, "same"
+            elif abs(ga - gb) == 1:
+                g, why = (max(ga, gb), "seed_max") if c.seed else (gb, "b")
+            else:
+                g, why = 1, "unresolved"
+            if abs(ga - gb) == 2:
+                conflicts.append({"case": p.case, "key": c.key, "law_name": c.law_name,
+                                  "article_no": c.article_no, "seed": c.seed, "a": ga, "b": gb,
+                                  "final": g, "why": why})  # fmt: skip
+            stats[why] += 1
+            if g:
+                out[str(g)].append(c.key)
+        answers[p.case] = out
+    return answers, dict(stats), conflicts

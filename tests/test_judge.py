@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from eval.dataset import EvalItem, Gold
+from eval.golden import judge as J
 from eval.golden.judge import agreement, apply, from_answers, kappa, sample_for_human, seed_table
 from eval.golden.pool import Candidate, PoolCase, case_id, group_cases, strip_article_refs
 
@@ -94,3 +95,39 @@ def test_pool_load_gzip(tmp_path: Path) -> None:
     gz = tmp_path / "x.pool.jsonl.gz"
     gz.write_bytes(gzip.compress(raw.read_bytes()))
     assert load(gz) == load(raw) == _pool()
+
+
+def test_merge_rules() -> None:
+    pool = _pool()
+    a = {"expc-1": {"L1:2": 2, "L1:3": 0, "L2:5": 0}}
+    b = {"expc-1": {"L1:2": 2, "L1:3": 1, "L2:5": 2}}
+    # 같음 → 그대로 · seed 1 차이 → 높은 쪽 · 0 ↔ 2 는 overrides 없으면 1 로 두고 미해결
+    answers, stats, conflicts = J.merge(pool, a, b)
+    assert answers["expc-1"] == {"2": ["L1:2"], "1": ["L1:3", "L2:5"]}
+    assert stats == {"same": 1, "seed_max": 1, "unresolved": 1}
+    assert [c["key"] for c in conflicts] == ["L2:5"]
+    answers, stats, _ = J.merge(pool, a, b, {"expc-1": {"L2:5": 0}})
+    assert answers["expc-1"] == {"2": ["L1:2"], "1": ["L1:3"]} and stats["override"] == 1
+    # seed 가 아닌 1 차이 → B
+    b2 = {"expc-1": {"L1:2": 2, "L1:3": 0, "L2:5": 1}}
+    answers, stats, _ = J.merge(pool, a, b2)
+    assert answers["expc-1"]["1"] == ["L2:5"] and stats["b"] == 1
+
+
+def test_judge_codex_parses_schema_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    p = _pool()[0]
+    seen: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], input: str, **kw: object) -> object:
+        seen["cmd"], seen["input"] = cmd, input
+        out = Path(cmd[cmd.index("-o") + 1])
+        grades = [{"id": f"c{i}", "grade": g} for i, g in enumerate([2, 0, 1], start=1)]
+        out.write_text(json.dumps({"judgments": grades}))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("eval.golden.judge.subprocess.run", fake_run)
+    got = J.judge_codex(p)
+    assert got == {p.candidates[0].key: 2, p.candidates[1].key: 0, p.candidates[2].key: 1}
+    cmd = seen["cmd"]
+    assert isinstance(cmd, list) and "read-only" in cmd and "--output-schema" in cmd
+    assert J.SYSTEM in str(seen["input"])

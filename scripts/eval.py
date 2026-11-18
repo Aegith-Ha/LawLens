@@ -253,11 +253,20 @@ def judge(
     answers: Path = typer.Option(
         None, help='API 대신 미리 판정한 JSON ({상황: {"2": [키], "1": [키]}})'
     ),
+    backend: str = typer.Option(
+        "claude", help="answers 가 없을 때 판정기: claude (Anthropic API) | codex (Codex CLI)"
+    ),
+    model: str = typer.Option(None, help="판정 모델 (codex 만. 기본: codex 설정값)"),
+    tag: str = typer.Option(
+        None, help="결과 파일 이름에 붙일 표시 (예: codex → <평가셋>.codex.judgments.jsonl)"
+    ),
     workers: int = typer.Option(4, help="동시 요청 수"),
 ) -> None:
     """등급 판정 → <평가셋>.judgments.jsonl, .judged.jsonl(새 정답 평가셋), .judge.md(검토 문서).
 
-    answers 가 없으면 Claude 로 판정한다 (유료, 상황 설명 · 조문 본문이 Anthropic API 로 전송됨)."""
+    answers 가 없으면 backend 로 판정한다. claude 는 Anthropic API (유료), codex 는 로그인한
+    Codex CLI 계정의 사용량을 쓴다. 둘 다 상황 설명 · 조문 본문이 외부로 전송된다.
+    결과 파일에 이미 판정된 상황은 다시 판정하지 않는다 (중간에 끊겨도 이어서 돌릴 수 있다)."""
     from functools import partial
 
     from eval.golden import judge as J
@@ -267,22 +276,33 @@ def judge(
     cases = load_pool(pool_path)
     base = _base(pool_path)
     dataset = dataset or base.with_name(base.name + ".jsonl")
+    out = base.with_name(f"{base.name}.{tag}") if tag else base
     if answers:
         fn, label = J.from_answers(answers), str(answers)
-    else:
+    elif backend == "codex":
+        fn = partial(J.judge_codex, model=model, log_dir=Path(".cache/codex_judge"))
+        label = f"codex:{model or 'default'}"
+    elif backend == "claude":
         fn, label = partial(J.judge_api, _anthropic_client()), J.MODEL
-    n = sum(len(p.candidates) for p in cases)
-    typer.echo(f"상황 {len(cases)}개 · 후보 {n}개 → {label} 로 판정")
-    judged, jstats = J.judge_all(cases, fn, workers=workers, progress=typer.echo)
-    J.save_judgments(cases, judged, _sibling(base, "judgments"), label)
+    else:
+        raise typer.BadParameter(f"backend: {backend}")
+    jpath = _sibling(out, "judgments")
+    done = J.load_judgments(jpath) if jpath.exists() and not answers else {}
+    todo = [p for p in cases if p.case not in done]
+    n = sum(len(p.candidates) for p in todo)
+    typer.echo(f"상황 {len(todo)}개 (이미 판정 {len(done)}개) · 후보 {n}개 → {label} 로 판정")
+    judged, jstats = J.judge_all(todo, fn, workers=workers, progress=typer.echo)
+    judged = {**done, **judged}
+    jstats["cases"], jstats["judged"] = len(cases), len(judged)
+    J.save_judgments(cases, judged, jpath, label)
     items = load_jsonl(dataset)
     with get_sessionmaker()() as session:
         resolve_law_ids(items, LawCatalog.load(session).law_id)
     new_items, astats = J.apply(items, cases, judged)
-    save_jsonl(new_items, _sibling(base, "judged"))
-    md = _sibling(base, "judge").with_suffix(".md")
+    save_jsonl(new_items, _sibling(out, "judged"))
+    md = _sibling(out, "judge").with_suffix(".md")
     md.write_text(J.report_markdown(cases, judged, jstats, astats, label), "utf-8")
-    typer.echo(f"{jstats}\n{astats}\n→ {_sibling(base, 'judged')}, 검토: {md}")
+    typer.echo(f"{jstats}\n{astats}\n→ {_sibling(out, 'judged')}, 검토: {md}")
 
 
 @app.command("judge-sample")
@@ -317,6 +337,35 @@ def judge_agree(
     rows = [json.loads(ln) for ln in human.open(encoding="utf-8") if ln.strip()]
     result = J.agreement(rows, J.load_judgments(_sibling(base, "judgments")))
     typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@app.command("judge-merge")
+def judge_merge(
+    pool_path: Path = typer.Argument(..., help="pool 파일"),
+    a: Path = typer.Option(..., help="판정 A (*.judgments.jsonl). 근거가 얕은 쪽"),
+    b: Path = typer.Option(..., help="판정 B (*.judgments.jsonl). 1 차이는 B 를 따른다"),
+    overrides: Path = typer.Option(
+        None, help="0 ↔ 2 로 갈린 조문을 사람이 정한 JSON ({상황: {키: 등급}})"
+    ),
+    out: Path = typer.Option(..., help="합친 결과 (answers 형식 JSON). judge --answers 로 넣는다"),
+) -> None:
+    """두 판정기를 합친다. 같으면 그대로, 1 차이는 seed 면 높은 쪽 · 아니면 B, 0 ↔ 2 는 overrides.
+
+    결과를 judge --answers 로 넣으면 .judgments · .judged · .judge.md 가 만들어진다."""
+    from eval.golden import judge as J
+    from eval.golden.pool import load as load_pool
+
+    ja, jb = J.load_judgments(a), J.load_judgments(b)
+    ov = json.loads(overrides.read_text("utf-8")) if overrides else None
+    answers, stats, conflicts = J.merge(load_pool(pool_path), ja, jb, ov)
+    out.write_text(json.dumps(answers, ensure_ascii=False, indent=1) + "\n", "utf-8")
+    xa = [g for c in sorted(ja.keys() & jb.keys()) for _, g in sorted(ja[c].items())]
+    xb = [g for c in sorted(ja.keys() & jb.keys()) for _, g in sorted(jb[c].items())]
+    typer.echo(f"kappa(A, B) = {J.kappa(xa, xb):.3f}  가중 = {J.kappa(xa, xb, True):.3f}")
+    typer.echo(f"{stats}\n→ {out}")
+    unresolved = [c for c in conflicts if c["why"] == "unresolved"]
+    for c in unresolved:
+        typer.echo(f"미해결 0↔2: {c['case']} {c['key']} {c['law_name']} {c['article_no']}")
 
 
 @app.command()

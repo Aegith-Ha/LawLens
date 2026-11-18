@@ -192,16 +192,26 @@ uv run python -m scripts.eval build-synth --n 300
 2. **등급 판정 (`judge`)**
    - 후보마다 2(핵심) / 1(관련) / 0(무관)을 매깁니다.
    - 판정 결과로 정답을 바꾼 평가셋 `*.judged.jsonl`을 만듭니다.
-3. **사람 확인 (`judge-sample` · `judge-agree`)**
+3. **두 판정 합치기 (`judge-merge`)**
+   - 서로 다른 판정기 두 개의 결과를 규칙으로 합칩니다. 0 ↔ 2로 크게 갈린 조문만 사람이 정합니다.
+4. **사람 확인 (`judge-sample` · `judge-agree`)**
    - 표본을 사람이 판정해 판정기와의 일치도(kappa)를 봅니다.
 
 ```bash
 uv run python -m scripts.eval pool eval/datasets/expc_rewrite.jsonl --depth 10
 # → expc_rewrite.pool.jsonl
 
-uv run python -m scripts.eval judge eval/datasets/expc_rewrite.pool.jsonl
-# Claude 로 판정 (유료). 미리 판정한 파일이 있으면 --answers <파일>
+uv run python -m scripts.eval judge eval/datasets/expc_rewrite.pool.jsonl.gz
+# Claude API 로 판정 (유료). 미리 판정한 파일이 있으면 --answers <파일>
 # → .judgments.jsonl (후보별 등급), .judged.jsonl (새 정답 평가셋), .judge.md (검토 문서)
+
+uv run python -m scripts.eval judge eval/datasets/expc_rewrite.pool.jsonl.gz --backend codex --tag codex --workers 3
+# Codex CLI 로 판정 (로그인한 계정 사용량) → .codex.judgments.jsonl 등. 기존 판정을 덮어쓰지 않음
+
+uv run python -m scripts.eval judge-merge eval/datasets/expc_rewrite.pool.jsonl.gz \
+  --a eval/datasets/expc_rewrite.claude.judgments.jsonl --b eval/datasets/expc_rewrite.codex.judgments.jsonl \
+  --overrides eval/datasets/expc_rewrite.judge_overrides.json --out eval/datasets/expc_rewrite.merged_answers.json
+uv run python -m scripts.eval judge eval/datasets/expc_rewrite.pool.jsonl.gz --answers eval/datasets/expc_rewrite.merged_answers.json
 
 uv run python -m scripts.eval judge-sample eval/datasets/expc_rewrite.pool.jsonl.gz --n 90
 # → .human.jsonl 의 grade 를 0 · 1 · 2 로 채운 뒤
@@ -213,11 +223,16 @@ uv run python -m scripts.eval judge-agree eval/datasets/expc_rewrite.human.jsonl
 | `pool --depth` | `20` | 검색 방식 · 질의마다 상위 몇 개를 모을지. 판정량이 이 값에 거의 비례합니다 (시범 50건: 10 → 1,486개, 20 → 2,813개) |
 | `pool --need` | `auto` | 판정자가 보는 상황 설명. `expc`(해석례 안건명 · 질의요지 · 회답, 조문 번호는 지움) / `query`(질의 그대로) |
 | `judge --answers` | 없음 | `{상황: {"2": [키], "1": [키]}}` JSON. 적지 않은 후보는 0. 키는 `law_id:조문번호` |
+| `judge --backend` | `claude` | `--answers` 가 없을 때 판정기. `claude`(Anthropic API, 키 필요) / `codex`(`codex exec`, 빈 임시 폴더 · 읽기 전용 샌드박스 · 응답 스키마 고정) |
+| `judge --tag` | 없음 | 결과 파일 이름에 붙일 표시. 다른 판정기 결과를 따로 둘 때 씁니다 |
+| `judge-merge --overrides` | 없음 | 0 ↔ 2로 갈린 조문을 사람이 정한 `{상황: {키: 등급}}`. 없으면 1로 두고 미해결로 출력합니다 |
 
 - pool 원본(`*.pool.jsonl`)은 커서 커밋하지 않고 gzip 압축본(`*.pool.jsonl.gz`)만 커밋합니다. 법령 sync · 날짜 · 검색 코드가 바뀌면 다시 만든 pool 이 판정 당시와 달라지므로, 판정에 쓴 pool 을 보관하기 위해서입니다. `judge` · `judge-sample` 은 압축본을 그대로 읽습니다.
 - 판정되지 않은 상황, 관련 조문이 하나도 없는 상황은 `.judged.jsonl`에서 빠집니다. 원래 정답은 `meta.seeds`에 남습니다.
 - `--depth 10`으로 모았으면 11~20위 결과는 판정받지 못해 오답으로 계산됩니다. 그래서 recall@20은 낮게 나올 수 있습니다.
-- API 판정 시 상황 설명과 조문 본문(공개 자료)이 Anthropic API로 전송됩니다.
+- API 판정 시 상황 설명과 조문 본문(공개 자료)이 Anthropic API(`claude`) 또는 OpenAI(`codex`)로 전송됩니다.
+- `judge` 는 결과 파일에 이미 판정된 상황을 다시 판정하지 않습니다. 사용량 한도 등으로 중간에 실패하면 같은 명령을 다시 실행하면 됩니다. Codex 상황별 로그는 `.cache/codex_judge/`에 남습니다.
+- `judge-merge` 규칙: 같으면 그대로 / 1 차이는 seed 면 높은 쪽, 아니면 B / 0 ↔ 2 는 overrides. B 에는 조문 전문을 읽은 판정기를 둡니다.
 
 ### 조정용 · 최종 확인용 분할 — `split`
 
