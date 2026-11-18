@@ -107,6 +107,13 @@ def need_from_queries(case: str, items: list[EvalItem]) -> str:
     return "\n".join(f"- {it.query}" for it in items)
 
 
+def need_from_meta(case: str, items: list[EvalItem]) -> str:
+    """C 처럼 생성기가 상황 설명(meta.need)을 함께 만든 경우."""
+    m = items[0].meta
+    who = f"{m['persona']}: " if m.get("persona") else ""
+    return f"{who}{m['need']}"
+
+
 def need_from_expc(raw_dir: Path) -> NeedFn:
     """해석례: 안건명 · 질의요지 · 회답 (조문 번호는 지움). 이유는 인용 조문 목록이라 뺀다."""
 
@@ -151,6 +158,19 @@ def build_case(
                     c = cands[key] = Candidate(key, a.law_id, a.article_no, a.law_name, "")
                 c.found_by.append(f"{mode.value}/{short}@{rank}")
                 c.best_rank = rank if c.best_rank is None else min(c.best_rank, rank)
+    # pool 보조 질의 (meta.pool_queries): 평가에는 안 쓰고 후보만 더 모은다 (pool 편향 줄이기)
+    extra = dict.fromkeys(q for it in items for q in it.meta.get("pool_queries") or [])
+    for q in extra:
+        for mode in modes:
+            resp = service.search(
+                q, limit=depth, as_of=items[0].as_of, kinds=items[0].kinds, mode=mode
+            )
+            for rank, a in enumerate([*resp.exact, *resp.results][:depth], start=1):
+                key = f"{a.law_id}:{a.article_no}"
+                c = cands.get(key)
+                if c is None:
+                    c = cands[key] = Candidate(key, a.law_id, a.article_no, a.law_name, "")
+                c.found_by.append(f"{mode.value}/pool@{rank}")
     seeds: dict[str, int] = {}
     for it in items:
         for g in it.gold:

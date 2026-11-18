@@ -216,11 +216,48 @@ def rewrite_expc(
 
 
 @app.command()
+def scenario(
+    per_area: int = typer.Option(6, help="분야마다 만들 상황 수 (분야 15개)"),
+    model: str = typer.Option(None, help="생성 모델 (codex. 기본: codex 설정값)"),
+    workers: int = typer.Option(3, help="동시 요청 수"),
+    output: Path = typer.Option(DATASETS / "scenario.jsonl", help="저장 경로"),
+    answers: Path = typer.Option(
+        None, help="생성기 대신 저장해 둔 생성 결과 JSON ({분야: [상황...]})"
+    ),
+) -> None:
+    """평가셋 C: 일반인 상황 시나리오를 Codex 로 만든다 (조문을 보여 주지 않음). 정답은 pool · judge 로.
+
+    생성 결과는 <이름>.answers.json 에 저장하고(--answers 로 다시 쓸 수 있음), 법령명 · 조문번호가
+    들어간 질의는 빼며, 검토 문서(.review.md)를 만든다."""
+    from eval.golden import scenario as S
+
+    _quiet_logs()
+    raw = output.with_name(output.name.removesuffix(".jsonl") + ".answers.json")
+    if answers:
+        gen, label = S.from_answers(answers), str(answers)
+    else:
+        gen = S.generate_codex(model, log_dir=Path(".cache/codex_scenario"))
+        label = f"codex:{model or 'default'}"
+    generated = S.generate_all(gen, per_area, workers, typer.echo)
+    if not answers:
+        raw.write_text(json.dumps(generated, ensure_ascii=False, indent=1) + "\n", "utf-8")
+    with get_sessionmaker()() as session:
+        names = S.law_names_for_leak(list(LawCatalog.load(session).name_to_id))
+    items, stats, review = S.build(generated, names, label)
+    save_jsonl(items, output)
+    md = output.with_name(output.name.removesuffix(".jsonl") + ".review.md")
+    md.write_text(S.review_markdown(review, stats), "utf-8")
+    typer.echo(f"{stats}\n→ {output}, 생성 결과: {raw}, 검토: {md}")
+
+
+@app.command()
 def pool(
     dataset: Path = typer.Argument(..., help="평가셋 jsonl (질의 + seed 정답)"),
     depth: int = typer.Option(20, help="검색 방식 · 질의마다 상위 몇 개를 모을지"),
     modes: str = typer.Option("hybrid,dense,sparse", help="후보를 모을 검색 방식"),
-    need: str = typer.Option("auto", help="정보 요구 설명: expc(해석례 본문) | query(질의) | auto"),
+    need: str = typer.Option(
+        "auto", help="정보 요구 설명: expc(해석례 본문) | meta(meta.need) | query(질의) | auto"
+    ),
     output: Path = typer.Option(None, help="저장 경로 (기본: <평가셋>.pool.jsonl)"),
     cache: Path = typer.Option(EMBED_CACHE, help="질의 임베딩 캐시 파일"),
 ) -> None:
@@ -232,10 +269,17 @@ def pool(
     items = load_jsonl(dataset)
     mode_list = [SearchMode(m.strip()) for m in modes.split(",") if m.strip()]
     if need == "auto":
-        need = "expc" if all(it.source == "expc" for it in items) else "query"
-    need_fn = (
-        P.need_from_expc(get_settings().raw_dir / "expc") if need == "expc" else P.need_from_queries
-    )
+        if all(it.source == "expc" for it in items):
+            need = "expc"
+        else:
+            need = "meta" if all(it.meta.get("need") for it in items) else "query"
+    need_fn: P.NeedFn
+    if need == "expc":
+        need_fn = P.need_from_expc(get_settings().raw_dir / "expc")
+    elif need == "meta":
+        need_fn = P.need_from_meta
+    else:
+        need_fn = P.need_from_queries
     out = output or _sibling(dataset, "pool")
     service = get_search_service()
     with get_sessionmaker()() as session:

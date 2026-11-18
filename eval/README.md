@@ -140,6 +140,7 @@ expc: 10/300  경과 0.3분, 남은 시간 약 8.7분
 |---|---|---|
 | `expc.jsonl` | C. 법령해석례 | 1,918 (해석례 959건 × masked/raw) |
 | `synth.jsonl` | B. 합성 | 아직 없음 (`ANTHROPIC_API_KEY` 필요) |
+| `scenario.jsonl` | 상황 시나리오 (golden/README 의 C) | 일반인 상황 90개 × user/short |
 
 ### C. 법령해석례 — `build-expc`
 
@@ -181,6 +182,23 @@ uv run python -m scripts.eval build-synth --n 300
 
 - 유료입니다. 조문 하나당 API 요청이 1번입니다.
 - 조문 본문(공개 법령)이 Anthropic API로 전송됩니다.
+
+### 상황 시나리오 — `scenario`
+
+일반인이 생활 중에 겪는 상황을 분야 15개(주택 임대차, 근로 · 임금, 교통 등)마다 Codex 로 만듭니다. 생성기에게 조문을 보여 주지 않습니다. 정답(seed)이 없으므로 `pool` · `judge`로 정답을 붙여야 평가에 쓸 수 있습니다.
+
+```bash
+uv run python -m scripts.eval scenario --per-area 6
+# → scenario.jsonl, scenario.answers.json (생성 결과), scenario.review.md (검토 문서)
+uv run python -m scripts.eval scenario --answers eval/datasets/scenario.answers.json
+# 생성 결과를 다시 써서 유출 검사 · 저장만 다시
+```
+
+- 상황마다 질의 2개: `scenario_user`(구어체 1~3문장), `scenario_short`(짧은 검색어).
+- 법령명 · 조문번호가 들어간 질의는 뺍니다. 법령명은 공백을 무시하고 찾고, 뒤에 다른 한글이 이어지면 다른 단어의 일부로 봅니다.
+- 생성기가 법률 용어로 바꿔 쓴 검색어(`meta.pool_queries`)는 평가에 쓰지 않고 `pool`에서 후보를 더 모으는 데만 씁니다. 현재 검색기가 일반인 말투로는 못 찾는 정답도 판정 대상에 들게 하기 위해서입니다.
+- `pool`은 `meta.need`(생성기가 쓴 상황 설명)를 판정자에게 보여 줍니다.
+- 상황 설명과 질의 생성 요청이 OpenAI(Codex)로 전송됩니다.
 
 ### 정답 다듬기 — `pool` · `judge`
 

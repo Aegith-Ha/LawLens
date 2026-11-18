@@ -125,7 +125,7 @@ def test_judge_codex_parses_schema_output(monkeypatch: pytest.MonkeyPatch) -> No
         out.write_text(json.dumps({"judgments": grades}))
         return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-    monkeypatch.setattr("eval.golden.judge.subprocess.run", fake_run)
+    monkeypatch.setattr("eval.golden.codex.subprocess.run", fake_run)
     got = J.judge_codex(p)
     assert got == {p.candidates[0].key: 2, p.candidates[1].key: 0, p.candidates[2].key: 1}
     cmd = seen["cmd"]

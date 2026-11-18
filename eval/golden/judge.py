@@ -11,8 +11,6 @@ seed 와 판정을 비교한 표, 사람 판정과의 일치도(kappa)로 판정
 
 import json
 import random
-import subprocess
-import tempfile
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from eval.dataset import EvalItem, Gold
+from eval.golden.codex import run_json
 from eval.golden.pool import PoolCase, case_id
 
 MODEL = "claude-opus-5-5"
@@ -95,32 +94,16 @@ def judge_api(client: Any, p: PoolCase) -> Judgments | None:
 def judge_codex(
     p: PoolCase, model: str | None = None, timeout: int = 900, log_dir: Path | None = None
 ) -> Judgments | None:
-    """Codex CLI (`codex exec`) 로 판정. 로그인한 ChatGPT 계정의 사용량을 쓴다.
-
-    도구를 쓰지 않도록 빈 임시 폴더에서 읽기 전용 샌드박스로 실행하고, 응답은 SCHEMA 로 고정한다."""
-    with tempfile.TemporaryDirectory() as tmp:
-        schema, out = Path(tmp, "schema.json"), Path(tmp, "out.json")
-        schema.write_text(json.dumps(SCHEMA), "utf-8")
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--ephemeral", "-s", "read-only",
-               "-C", tmp, "--output-schema", str(schema), "-o", str(out), "--color", "never"]  # fmt: skip
-        if model:
-            cmd += ["-m", model]
-        r = subprocess.run(
-            [*cmd, "-"], input=f"{SYSTEM}\n\n{prompt(p)}", capture_output=True, text=True,
-            timeout=timeout,
-        )  # fmt: skip
-        if log_dir:
-            log_dir.mkdir(parents=True, exist_ok=True)
-            (log_dir / f"{p.case}.log").write_text(r.stdout + "\n--- stderr ---\n" + r.stderr)
-        if r.returncode != 0 or not out.exists():
-            raise RuntimeError(f"codex 종료 코드 {r.returncode}: {r.stderr[-500:]}")
-        return _parse(p, out.read_text("utf-8"))
+    """Codex CLI 로 판정 (eval.golden.codex 참고)."""
+    log = log_dir / f"{p.case}.log" if log_dir else None
+    return _parse(p, run_json(f"{SYSTEM}\n\n{prompt(p)}", SCHEMA, model, timeout, log))
 
 
-def _parse(p: PoolCase, txt: str) -> Judgments:
+def _parse(p: PoolCase, resp: str | dict[str, Any]) -> Judgments:
     by_id = {f"c{i}": c.key for i, c in enumerate(p.candidates, start=1)}
     out: Judgments = {}
-    for j in json.loads(txt)["judgments"]:
+    data = json.loads(resp) if isinstance(resp, str) else resp
+    for j in data["judgments"]:
         if j["id"] in by_id:
             out[by_id[j["id"]]] = int(j["grade"])
     missing = set(by_id.values()) - set(out)
